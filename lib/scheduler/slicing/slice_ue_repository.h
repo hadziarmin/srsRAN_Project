@@ -26,7 +26,8 @@
 #include "srsran/adt/slotted_array.h"
 
 namespace srsran {
-
+  extern std::atomic<bool> g_use_custom_policy;
+  extern std::atomic<uint16_t> g_use_custom_policy_ue;
 class slice_ue_repository;
 
 /// UE that is a candidate for scheduling in a given RAN slice for a given cell.
@@ -34,6 +35,9 @@ class slice_ue
 {
 public:
   explicit slice_ue(ue& u, ue_cell& ue_cc_, ran_slice_id_t slice_id);
+
+  mutable std::chrono::steady_clock::time_point start_time{};
+  mutable bool use_alternate_logic = false;
 
   /// Returns DU UE index.
   du_ue_index_t ue_index() const { return u.ue_index; }
@@ -108,6 +112,8 @@ public:
   {
     return contains(lcid) ? u.dl_logical_channels().hol_toa(lcid) : slot_point{};
   }
+
+  void set_use_alternate_logic(bool value);
 
 private:
   friend class slice_ue_repository;

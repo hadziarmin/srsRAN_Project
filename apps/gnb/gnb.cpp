@@ -42,6 +42,7 @@
 #include "apps/units/o_cu_up/o_cu_up_application_unit.h"
 #include "apps/units/o_cu_up/o_cu_up_unit_config.h"
 #include "apps/units/o_cu_up/pcap_factory.h"
+#include "apps/services/mqtt/mqtt.h"
 #include "gnb_appconfig.h"
 #include "gnb_appconfig_cli11_schema.h"
 #include "gnb_appconfig_translators.h"
@@ -71,6 +72,7 @@
 // Include ThreadSanitizer (TSAN) options if thread sanitization is enabled.
 // This include is not unused - it helps prevent false alarms from the thread sanitizer.
 #include "srsran/support/tsan_options.h"
+#include "lib/scheduler/slicing/slice_ue_repository.h"
 
 using namespace srsran;
 
@@ -477,7 +479,6 @@ int main(int argc, char** argv)
   auto du_inst_and_cmds = o_du_app_unit->create_flexible_o_du_unit(odu_dependencies);
 
   srs_du::du& du_inst = *du_inst_and_cmds.unit;
-
   for (auto& metric : du_inst_and_cmds.metrics) {
     metrics_configs.push_back(std::move(metric));
   }
@@ -529,6 +530,13 @@ int main(int argc, char** argv)
   // Start processing.
   du_inst.get_operation_controller().start();
   metrics_mngr.start();
+
+  //auto slice_repo = std::make_shared<slice_ue_repository>( );
+  //Start MQTT client
+  app_services::MQTTClient mqtt_client;
+  mqtt_client.connect();
+  mqtt_client.subscribe();
+  mqtt_client.start_listening();
 
   std::unique_ptr<app_services::remote_server> remote_control_server =
       app_services::create_remote_server(gnb_cfg.remote_control_config, du_inst_and_cmds.commands.remote);

@@ -21,7 +21,11 @@
  */
 
 #include "slice_ue_repository.h"
-
+#include <iostream>
+namespace srsran{
+    std::atomic<bool> g_use_custom_policy{false};
+    std::atomic<uint16_t> g_use_custom_policy_ue{0};
+}
 using namespace srsran;
 
 slice_ue::slice_ue(ue& u_, ue_cell& ue_cc_, ran_slice_id_t slice_id_) : u(u_), ue_cc(ue_cc_), slice_id(slice_id_)
@@ -126,10 +130,31 @@ static unsigned sum_allocated_ul_harq_bytes(const ue& u)
 unsigned slice_ue::pending_ul_newtx_bytes() const
 {
   static constexpr unsigned SR_GRANT_BYTES = 512;
+  static constexpr std::chrono::seconds PRINT_INTERVAL(2);
+  static thread_local auto last_print = std::chrono::steady_clock::now() - PRINT_INTERVAL;
 
-  int pending_bytes  = u.ul_logical_channels().pending_bytes(slice_id);
+  // ...existing code...
+
+
+  bool custom_logic = g_use_custom_policy.load(std::memory_order_relaxed);
+  uint16_t custom_logic_ue = g_use_custom_policy_ue.load(std::memory_order_relaxed);
+  int pending_bytes;
+  auto now = std::chrono::steady_clock::now();
+  if (now - last_print >= PRINT_INTERVAL) {
+    //std::cerr << "rnti: " << to_value(u.crnti);
+    //std::cerr << " received_rnti: " << custom_logic_ue << std::endl;
+    last_print = now;
+  }
+
+  if (custom_logic && custom_logic_ue == to_value(u.crnti)) {
+    pending_bytes = std::max(100U, u.ul_logical_channels().pending_bytes(slice_id));
+  } else {
+    pending_bytes = u.ul_logical_channels().pending_bytes(slice_id);
+  }
+
+  //int pending_bytes  = u.ul_logical_channels().pending_bytes(slice_id);
+  //int pending_bytes  = std::max(1000U,u.ul_logical_channels().pending_bytes(slice_id));
   int harqs_in_bytes = -1;
-
   if (pending_bytes > 0) {
     // Subtract the bytes already allocated in UL HARQs.
     harqs_in_bytes = sum_allocated_ul_harq_bytes(u);
@@ -153,3 +178,5 @@ unsigned slice_ue::pending_ul_newtx_bytes() const
 
   return 0;
 }
+
+void slice_ue::set_use_alternate_logic(bool value) { use_alternate_logic = value; }
