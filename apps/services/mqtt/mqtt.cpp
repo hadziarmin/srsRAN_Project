@@ -76,6 +76,7 @@ void MQTTClient::start_listening() {
                 std::cerr << "Invalid message format! Expected two values separated by a comma." << std::endl;
             }
             bool flag = (flag_str != "0");
+            std::cout << "Flag: " << flag << std::endl;
             srsran::g_use_custom_policy.store(flag, std::memory_order_relaxed);  
             srsran::g_use_custom_policy_ue.store(ue_rnti, std::memory_order_relaxed);          
         });

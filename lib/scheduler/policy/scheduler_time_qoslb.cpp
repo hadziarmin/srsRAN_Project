@@ -24,6 +24,7 @@
 #include "../slicing/slice_ue_repository.h"
 #include "../support/csi_report_helpers.h"
 #include "../ue_scheduling/grant_params_selector.h"
+#include "../slicing/slice_ue_repository.h"
 #include <iostream>
 using namespace srsran;
 
@@ -208,18 +209,39 @@ double compute_ul_qos_weights(const slice_ue&                         u,
                               double                                  avg_ul_rate,
                               const time_qos_scheduler_expert_config& policy_params)
 {
+  bool custom_logic = g_use_custom_policy.load(std::memory_order_relaxed);
+  uint16_t custom_logic_ue = g_use_custom_policy_ue.load(std::memory_order_relaxed);
+  // if (u.has_pending_sr() or avg_ul_rate == 0) {
+  //   // Highest priority to SRs and UEs that have not yet received any allocation.
+  //   return max_sched_priority;
+  // }
   if (u.has_pending_sr() or avg_ul_rate == 0) {
-    // Highest priority to SRs and UEs that have not yet received any allocation.
-    return max_sched_priority;
+    if (custom_logic) {
+      if ((uint16_t)u.crnti() == custom_logic_ue and avg_ul_rate < 2500) // and avg_ul_rate < 1250
+      {
+        return max_sched_priority;
+      } else
+        return lowest_sched_priority;
+    } else
+      return max_sched_priority;
+  }
+
+  if (custom_logic) {
+    if ((uint16_t)u.crnti() == custom_logic_ue and avg_ul_rate < 2500) // and avg_ul_rate < 1250
+    {
+      return max_sched_priority;
+    } else
+      return lowest_sched_priority;
   }
 
   uint8_t min_prio_level = qos_prio_level_t::max();
   double  gbr_weight     = 0;
   if (policy_params.gbr_enabled or policy_params.priority_enabled) {
     for (logical_channel_config_ptr lc : *u.logical_channels()) {
+      // std::cout << "Logical channel ID:"<< lc->lcid << std::endl;
       if (not u.contains(lc->lcid) or not lc->qos.has_value() or u.pending_ul_unacked_bytes(lc->lc_group) == 0) {
-        // LC is not part of the slice or no QoS config was provided for this LC or there are no pending bytes for this
-        // group.
+        // LC is not part of the slice or no QoS config was provided for this LC or there are no pending bytes for
+        // this group.
         continue;
       }
 
@@ -234,24 +256,33 @@ double compute_ul_qos_weights(const slice_ue&                         u,
       // GBR flow.
       lcg_id_t lcg_id  = u.get_lcg_id(lc->lcid);
       double   ul_rate = u.ul_avg_bit_rate(lcg_id);
+
       if (ul_rate != 0) {
         gbr_weight += std::min(lc->qos->gbr_qos_info->gbr_ul / ul_rate, max_metric_weight);
       } else {
         gbr_weight = max_metric_weight;
       }
     }
+    }
+
+    // if (custom_logic and u.ue_index() == custom_logic_ue and avg_ul_rate < 25000)
+    // {
+    //   if (ul_rate != 0) {
+    //       gbr_weight += std::min(lc->qos->gbr_qos_info->gbr_ul / ul_rate, max_metric_weight);
+    //     } else {
+    //       gbr_weight = max_metric_weight;
+    //     }
+    // }
+    // If no GBR flows are configured, the gbr rate is set to 1.0.
+    gbr_weight = policy_params.gbr_enabled and gbr_weight != 0 ? gbr_weight : 1.0;
+
+    double pf_weight   = compute_pf_metric(estim_ul_rate, avg_ul_rate, policy_params.pf_fairness_coeff);
+    double prio_weight = policy_params.priority_enabled ? (qos_prio_level_t::max() + 1 - min_prio_level) /
+                                                              static_cast<double>(qos_prio_level_t::max() + 1)
+                                                        : 1.0;
+
+    return combine_qos_metrics(pf_weight, gbr_weight, prio_weight, 1.0, policy_params);
   }
-
-  // If no GBR flows are configured, the gbr rate is set to 1.0.
-  gbr_weight = policy_params.gbr_enabled and gbr_weight != 0 ? gbr_weight : 1.0;
-
-  double pf_weight   = compute_pf_metric(estim_ul_rate, avg_ul_rate, policy_params.pf_fairness_coeff);
-  double prio_weight = policy_params.priority_enabled ? (qos_prio_level_t::max() + 1 - min_prio_level) /
-                                                            static_cast<double>(qos_prio_level_t::max() + 1)
-                                                      : 1.0;
-
-  return combine_qos_metrics(pf_weight, gbr_weight, prio_weight, 1.0, policy_params);
-}
 
 } // namespace
 

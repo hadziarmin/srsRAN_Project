@@ -26,7 +26,7 @@
 using namespace srsran;
 
 #ifndef PUSCH_PROCESSOR_MAX_NOF_LAYERS
-#define PUSCH_PROCESSOR_MAX_NOF_LAYERS 1
+#define PUSCH_PROCESSOR_MAX_NOF_LAYERS 4
 #endif // PUSCH_PROCESSOR_MAX_NOF_LAYERS
 
 pusch_processor_phy_capabilities srsran::get_pusch_processor_phy_capabilities()

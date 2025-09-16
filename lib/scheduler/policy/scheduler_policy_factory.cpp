@@ -34,8 +34,8 @@ std::unique_ptr<scheduler_policy> srsran::create_scheduler_strategy(const schedu
     return std::make_unique<scheduler_time_rr>(expert_cfg_);
   }
   if (std::holds_alternative<time_qos_scheduler_expert_config>(expert_cfg_.strategy_cfg)) {
-    return std::make_unique<scheduler_time_qos>(expert_cfg_, cell_index);
-    //return std::make_unique<scheduler_time_qos_lb>(expert_cfg_, cell_index);
+    //return std::make_unique<scheduler_time_qos>(expert_cfg_, cell_index);
+    return std::make_unique<scheduler_time_qos_lb>(expert_cfg_, cell_index);
   }
   return nullptr;
 }

@@ -146,7 +146,7 @@ unsigned slice_ue::pending_ul_newtx_bytes() const
     last_print = now;
   }
 
-  if (custom_logic && custom_logic_ue == to_value(u.crnti)) {
+  if (0 && custom_logic && custom_logic_ue == to_value(u.crnti)) {
     pending_bytes = std::max(100U, u.ul_logical_channels().pending_bytes(slice_id));
   } else {
     pending_bytes = u.ul_logical_channels().pending_bytes(slice_id);

@@ -4,7 +4,7 @@
 test_mode:
   test_ue:
     rnti: 0x44
-    ri: 1 # Set to 2 or 4 for 2 layer or 4 layer MIMO operation
+    ri: 4 # Set to 2 or 4 for 2 layer or 4 layer MIMO operation
     cqi: 15
     nof_ues: 1
     pusch_active: true

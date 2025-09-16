@@ -32,6 +32,7 @@ set(SOURCES
         policy/scheduler_policy_factory.cpp
         policy/scheduler_time_rr.cpp
         policy/scheduler_time_qos.cpp
+        policy/scheduler_time_qoslb.cpp
         pucch_scheduling/pucch_allocator_impl.cpp
         pucch_scheduling/pucch_guardbands_scheduler.cpp
         pucch_scheduling/pucch_resource_manager.cpp
