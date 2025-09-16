@@ -128,6 +128,9 @@ static void configure_cli11_ru_ofh_base_cell_args(CLI::App& app, ru_ofh_unit_bas
              "Ignore the start symbol field in the PRACH U-Plane packets")
       ->capture_default_str();
 
+  add_option(app, "--log_lates_as_warnings", config.enable_log_warnings_for_lates, "Log late events as warnings")
+      ->capture_default_str();
+
   add_option_function<std::string>(
       app,
       "--warn_unreceived_ru_frames",
@@ -185,9 +188,95 @@ static void configure_cli11_ru_ofh_base_cell_args(CLI::App& app, ru_ofh_unit_bas
              config.is_downlink_static_comp_hdr_enabled,
              "Downlink static compression header enabled flag")
       ->capture_default_str();
-  add_option(app, "--iq_scaling", config.iq_scaling, "IQ scaling factor")
+
+  app.add_option_function<float>(
+         "--ru_reference_level_dBFS",
+         [&config](float value) {
+           if (!std::holds_alternative<ru_ofh_scaling_config>(config.iq_scaling_config)) {
+             config.iq_scaling_config.emplace<ru_ofh_scaling_config>();
+           }
+           std::get<ru_ofh_scaling_config>(config.iq_scaling_config).ru_reference_level_dBFS = value;
+         },
+         "RU IQ reference level mapped to the maximum RF power")
+      ->check(CLI::Range(-std::numeric_limits<float>::infinity(), 0.0f))
+      ->check([&config](const std::string& value) -> std::string {
+        if (std::holds_alternative<ru_ofh_legacy_scaling_config>(config.iq_scaling_config)) {
+          return "IQ scaling and RU reference level cannot be set at the same time";
+        }
+        return "";
+      });
+
+  app.add_option_function<std::string>(
+         "--subcarrier_rms_backoff_dB",
+         [&config](std::string value) {
+           if (!std::holds_alternative<ru_ofh_scaling_config>(config.iq_scaling_config)) {
+             config.iq_scaling_config.emplace<ru_ofh_scaling_config>();
+           }
+           // By default, subcarrier backoff is set to 'auto', i.e., normalize bandwidth based on number of
+           // subcarriers. If another value is specified, it is parsed.
+           if (value != "auto") {
+             // It is safe to convert the value without try-catch because it has been already checked.
+             float backoff                                                                       = std::stof(value);
+             std::get<ru_ofh_scaling_config>(config.iq_scaling_config).subcarrier_rms_backoff_dB = backoff;
+           }
+         },
+         "Power back-off attenuation applied to all subcarriers with respect to the RU reference level")
+      ->check(CLI::Range(0.0f, std::numeric_limits<float>::infinity()) | CLI::IsMember({"auto"}))
+      ->check([&config](const std::string& value) -> std::string {
+        if (std::holds_alternative<ru_ofh_legacy_scaling_config>(config.iq_scaling_config)) {
+          return "IQ scaling and RU subcarrier back-off cannot be set at the same time";
+        }
+        return "";
+      });
+
+  app.add_option_function<float>(
+         "--iq_scaling",
+         [&config](float value) {
+           if (!std::holds_alternative<ru_ofh_legacy_scaling_config>(config.iq_scaling_config)) {
+             config.iq_scaling_config.emplace<ru_ofh_legacy_scaling_config>();
+           }
+           std::get<ru_ofh_legacy_scaling_config>(config.iq_scaling_config).iq_scaling = value;
+         },
+         "Linear IQ scaling factor. It replaces the RU reference level and subarrier back-off")
+      ->check(CLI::Range(0.0, 100.0))
+      ->check([&config](const std::string& value) -> std::string {
+        if (std::holds_alternative<ru_ofh_scaling_config>(config.iq_scaling_config)) {
+          return "IQ scaling cannot be used in conjunction with other scaling parameters.";
+        }
+        return "";
+      });
+
+  auto cplane_prach_fft_size_check = [](const std::string& value) -> std::string {
+    if ((value == "128") || (value == "256") || (value == "512") || (value == "1024") || (value == "1536") ||
+        (value == "2048") || (value == "3072") || (value == "4096")) {
+      return {};
+    }
+
+    return "Supported Open Fronthaul Radio Unit C-Plane PRACH FFT sizes are [128, 256, 512, 1024, 1536, 2048, 3072, "
+           "4096]";
+  };
+
+  app.add_option_function<unsigned>(
+         "--cplane_prach_fft_len",
+         [&config](unsigned value) {
+           switch (value) {
+             case 0:
+               config.c_plane_prach_fft_len = ofh::cplane_fft_size::fft_noop;
+               break;
+             case 1536:
+               config.c_plane_prach_fft_len = ofh::cplane_fft_size::fft_1536;
+               break;
+             case 3072:
+               config.c_plane_prach_fft_len = ofh::cplane_fft_size::fft_3072;
+               break;
+             default:
+               config.c_plane_prach_fft_len = static_cast<ofh::cplane_fft_size>(std::log2(value));
+               break;
+           }
+         },
+         "PRACH FFT length (used in C-Plane Type-3 messages)")
       ->capture_default_str()
-      ->check(CLI::Range(0.0, 100.0));
+      ->check(cplane_prach_fft_size_check);
 
   // Callback function for validating that both compression method and bitwidth parameters were specified.
   auto validate_compression_input = [](CLI::App& cli_app, const std::string& direction) {
@@ -201,12 +290,28 @@ static void configure_cli11_ru_ofh_base_cell_args(CLI::App& app, ru_ofh_unit_bas
     }
   };
 
+  auto validate_iq_scaling_input = [](CLI::App& cli_app) {
+    unsigned ref_level_count  = cli_app.count("--ru_reference_level_dBFS");
+    unsigned backoff_count    = cli_app.count("--subcarrier_rms_backoff_dB");
+    unsigned iq_scaling_count = cli_app.count("--iq_scaling");
+
+    if (iq_scaling_count && (ref_level_count || backoff_count)) {
+      report_error(
+          "RU IQ scaling parameter cannot be used if RU reference level and subcarrier RMS back-off are set\n");
+    }
+
+    if (backoff_count > 0 && ref_level_count == 0) {
+      report_error("RU reference level is required if subcarrier RMS back-off is set\n");
+    }
+  };
+
   // Post-parsing callback to validate that compression method and bitwidth parameters were both specified or both set
   // to default.
   app.callback([&]() {
     validate_compression_input(app, "dl");
     validate_compression_input(app, "ul");
     validate_compression_input(app, "prach");
+    validate_iq_scaling_input(app);
   });
 }
 
@@ -247,7 +352,7 @@ static void configure_cli11_ru_ofh_args(CLI::App& app, ru_ofh_unit_parsed_config
   add_option(app, "--gps_beta", ofh_cfg.gps_Beta, "GPS Beta")->capture_default_str()->check(CLI::Range(-32768, 32767));
 
   // Common cell parameters.
-  auto base_cell_group = app.add_option_group("base_cell");
+  auto* base_cell_group = app.add_option_group("base_cell");
   configure_cli11_ru_ofh_base_cell_args(*base_cell_group, config.base_cell_cfg);
   base_cell_group->parse_complete_callback([&config, &app]() {
     for (auto& cell : config.config.cells) {
@@ -305,15 +410,6 @@ static void configure_cli11_cell_affinity_args(CLI::App& app, ru_ofh_unit_cpu_af
       "Policy used for assigning CPU cores to the Radio Unit tasks");
 }
 
-static void configure_cli11_ofh_threads_args(CLI::App& app, ru_ofh_unit_expert_threads_config& config)
-{
-  add_option(app,
-             "--enable_dl_parallelization",
-             config.is_downlink_parallelized,
-             "Open Fronthaul downlink parallelization flag")
-      ->capture_default_str();
-}
-
 static void configure_cli11_txrx_affinity_args(CLI::App& app, os_sched_affinity_bitmask& mask)
 {
   add_option_function<std::string>(
@@ -325,21 +421,13 @@ static void configure_cli11_txrx_affinity_args(CLI::App& app, os_sched_affinity_
 
 static void configure_cli11_expert_execution_args(CLI::App& app, ru_ofh_unit_expert_execution_config& config)
 {
-  // Affinity section.
+  // Affinities section.
   CLI::App* affinities_subcmd = add_subcommand(app, "affinities", "gNB CPU affinities configuration")->configurable();
   add_option_function<std::string>(
       *affinities_subcmd,
       "--ru_timing_cpu",
       [&config](const std::string& value) { parse_affinity_mask(config.ru_timing_cpu, value, "ru_timing_cpu"); },
       "CPU used for timing in the Radio Unit");
-
-  // Threads section.
-  CLI::App* threads_subcmd = add_subcommand(app, "threads", "Threads configuration")->configurable();
-
-  // OFH threads.
-  CLI::App* ofh_threads_subcmd =
-      add_subcommand(*threads_subcmd, "ofh", "Open Fronthaul thread configuration")->configurable();
-  configure_cli11_ofh_threads_args(*ofh_threads_subcmd, config.threads);
 
   // RU txrx affinity section.
   add_option_cell(
@@ -382,12 +470,14 @@ static void configure_cli11_expert_execution_args(CLI::App& app, ru_ofh_unit_exp
       "Sets the cell CPU affinities configuration on a per cell basis");
 }
 
+#ifdef DPDK_FOUND
 static void configure_cli11_hal_args(CLI::App& app, std::optional<ru_ofh_unit_hal_config>& config)
 {
   config.emplace();
 
   add_option(app, "--eal_args", config->eal_args, "EAL configuration parameters used to initialize DPDK");
 }
+#endif
 
 static void configure_cli11_metrics_args(CLI::App& app, ru_ofh_unit_metrics_config& config)
 {
@@ -410,9 +500,11 @@ void srsran::configure_cli11_with_ru_ofh_config_schema(CLI::App& app, ru_ofh_uni
   CLI::App* expert_subcmd = add_subcommand(app, "expert_execution", "Expert execution configuration")->configurable();
   configure_cli11_expert_execution_args(*expert_subcmd, parsed_cfg.config.expert_execution_cfg);
 
-  // HAL section.
+  // HAL section only available when DPDK is present.
+#ifdef DPDK_FOUND
   CLI::App* hal_subcmd = add_subcommand(app, "hal", "HAL configuration")->configurable();
   configure_cli11_hal_args(*hal_subcmd, parsed_cfg.config.hal_config);
+#endif
 
   // Metrics section.
   app_helpers::configure_cli11_with_metrics_appconfig_schema(app, parsed_cfg.config.metrics_cfg.metrics_cfg);
@@ -420,6 +512,7 @@ void srsran::configure_cli11_with_ru_ofh_config_schema(CLI::App& app, ru_ofh_uni
   configure_cli11_metrics_args(*metrics_subcmd, parsed_cfg.config.metrics_cfg);
 }
 
+#ifdef DPDK_FOUND
 static void manage_hal_optional(CLI::App& app, std::optional<ru_ofh_unit_hal_config>& hal_config)
 {
   // Clean the HAL optional.
@@ -429,8 +522,11 @@ static void manage_hal_optional(CLI::App& app, std::optional<ru_ofh_unit_hal_con
     subcmd->disabled();
   }
 }
+#endif
 
 void srsran::autoderive_ru_ofh_parameters_after_parsing(CLI::App& app, ru_ofh_unit_parsed_config& parsed_cfg)
 {
+#ifdef DPDK_FOUND
   manage_hal_optional(app, parsed_cfg.config.hal_config);
+#endif
 }

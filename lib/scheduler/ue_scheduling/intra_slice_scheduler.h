@@ -31,6 +31,7 @@ namespace srsran {
 class pdcch_resource_allocator;
 class scheduler_policy;
 class ue_repository;
+class cell_metrics_handler;
 
 class intra_slice_scheduler
 {
@@ -40,6 +41,7 @@ public:
                         pdcch_resource_allocator&         pdcch_alloc,
                         uci_allocator&                    uci_alloc,
                         cell_resource_allocator&          cell_alloc,
+                        cell_metrics_handler&             cell_metrics_,
                         cell_harq_manager&                cell_harqs_,
                         srslog::basic_logger&             logger_);
 
@@ -104,6 +106,7 @@ private:
 
   const scheduler_ue_expert_config& expert_cfg;
   const cell_resource_allocator&    cell_alloc;
+  cell_metrics_handler&             cell_metrics;
   cell_harq_manager&                cell_harqs;
   uci_allocator&                    uci_alloc;
   srslog::basic_logger&             logger;
@@ -130,6 +133,7 @@ private:
   slot_point pdsch_slot;
   slot_point pusch_slot;
   vrb_bitmap used_dl_vrbs;
+  bool       enable_pdsch_interleaving;
   vrb_bitmap used_ul_vrbs;
 
   // Grants being built for the current slice.

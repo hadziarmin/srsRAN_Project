@@ -31,7 +31,7 @@ rlc_tx_tm_entity::rlc_tx_tm_entity(gnb_du_id_t                          du_id,
                                    rlc_tx_upper_layer_data_notifier&    upper_dn_,
                                    rlc_tx_upper_layer_control_notifier& upper_cn_,
                                    rlc_tx_lower_layer_notifier&         lower_dn_,
-                                   rlc_metrics_aggregator&              metrics_agg_,
+                                   rlc_bearer_metrics_collector&        metrics_coll_,
                                    rlc_pcap&                            pcap_,
                                    task_executor&                       pcell_executor_,
                                    task_executor&                       ue_executor_,
@@ -42,7 +42,7 @@ rlc_tx_tm_entity::rlc_tx_tm_entity(gnb_du_id_t                          du_id,
                 upper_dn_,
                 upper_cn_,
                 lower_dn_,
-                metrics_agg_,
+                metrics_coll_,
                 pcap_,
                 pcell_executor_,
                 ue_executor_,
@@ -87,7 +87,7 @@ void rlc_tx_tm_entity::discard_sdu(uint32_t pdcp_sn)
 }
 
 // TS 38.322 v16.2.0 Sec. 5.2.1.1
-size_t rlc_tx_tm_entity::pull_pdu(span<uint8_t> mac_sdu_buf)
+size_t rlc_tx_tm_entity::pull_pdu(span<uint8_t> mac_sdu_buf) noexcept SRSRAN_RTSAN_NONBLOCKING
 {
   size_t grant_len = mac_sdu_buf.size();
   logger.log_debug("MAC opportunity. grant_len={}", grant_len);
@@ -126,8 +126,13 @@ size_t rlc_tx_tm_entity::pull_pdu(span<uint8_t> mac_sdu_buf)
   size_t pdu_len = out_it - mac_sdu_buf.begin();
   logger.log_info(mac_sdu_buf.data(), pdu_len, "TX PDU. pdu_len={} grant_len={}", pdu_len, grant_len);
 
-  // Release SDU
-  sdu.buf.clear();
+  // Recycle SDU buffer in non real-time UE executor
+  if (!ue_executor.defer([sdu = std::move(sdu.buf)]() mutable {
+        // leaving this scope will implicitly delete the SDU
+      })) {
+    logger.log_warning("Cannot release transmitted SDU in UE executor. Releasing from pcell executor.");
+    sdu.buf.clear();
+  }
 
   // Push PDU into PCAP.
   pcap.push_pdu(pcap_context, mac_sdu_buf.subspan(0, pdu_len));
@@ -156,7 +161,7 @@ void rlc_tx_tm_entity::handle_changed_buffer_state()
   }
 }
 
-void rlc_tx_tm_entity::update_mac_buffer_state()
+void rlc_tx_tm_entity::update_mac_buffer_state() noexcept SRSRAN_RTSAN_NONBLOCKING
 {
   pending_buffer_state.clear(std::memory_order_seq_cst);
   rlc_buffer_state bs = get_buffer_state();

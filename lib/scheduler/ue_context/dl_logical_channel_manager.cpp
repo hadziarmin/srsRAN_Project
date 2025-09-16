@@ -21,6 +21,7 @@
  */
 
 #include "dl_logical_channel_manager.h"
+#include "srsran/ran/qos/arp_prio_level.h"
 
 using namespace srsran;
 
@@ -34,15 +35,28 @@ static unsigned get_mac_sdu_size(unsigned sdu_and_subheader_bytes)
 }
 
 // Initial capacity for the sorted_channels vector.
-constexpr unsigned INITIAL_CHANNEL_VEC_CAPACITY = 8;
+static constexpr unsigned INITIAL_CHANNEL_VEC_CAPACITY = 8;
 
 // Initial capacity for the slice_lcid_list_lookup vector.
-constexpr unsigned INITIAL_SLICE_CAPACITY = 4;
+static constexpr unsigned INITIAL_SLICE_CAPACITY = 4;
+
+// Number of MAC CEs supported by the implementation.
+// - SCELL_ACTIV_4_OCTET || SCELL_ACTIV_4_OCTET
+// - DRX_CMD || LONG_DRX_CMD
+// - TA_CMD
+// - UE_CON_RES_ID
+// - PADDING
+static constexpr unsigned MAX_CES_PER_UE = 5;
+
+// Size of the pending_ces queue.
+static constexpr unsigned MAX_PENDING_CES = MAX_NOF_DU_UES * MAX_CES_PER_UE;
 
 dl_logical_channel_manager::dl_logical_channel_manager(subcarrier_spacing              scs_common_,
                                                        bool                            starts_in_fallback,
                                                        logical_channel_config_list_ptr log_channels_configs) :
-  slots_per_sec(get_nof_slots_per_subframe(scs_common_) * 1000), fallback_state(starts_in_fallback)
+  slots_per_sec(get_nof_slots_per_subframe(scs_common_) * 1000),
+  fallback_state(starts_in_fallback),
+  pending_ces(MAX_PENDING_CES)
 {
   // Reserve entries to avoid allocating in hot path.
   sorted_channels.reserve(INITIAL_CHANNEL_VEC_CAPACITY);
@@ -130,13 +144,14 @@ void dl_logical_channel_manager::set_lcid_ran_slice(lcid_t lcid, ran_slice_id_t 
   channels[lcid].slice_id = slice_id;
 }
 
-static uint8_t get_lc_prio(const logical_channel_config& cfg)
+static uint16_t get_lc_prio(const logical_channel_config& cfg)
 {
-  uint8_t prio = 0;
+  uint16_t prio = 0;
   if (is_srb(cfg.lcid)) {
     prio = cfg.lcid <= LCID_SRB1 ? 0 : 1;
   } else {
-    prio = cfg.qos.has_value() ? cfg.qos->qos.priority.value() : qos_prio_level_t::max();
+    prio = cfg.qos.has_value() ? cfg.qos->qos.priority.value() * cfg.qos->arp_priority.value()
+                               : qos_prio_level_t::max() * arp_prio_level_t::max();
   }
   return prio;
 }
@@ -263,12 +278,12 @@ unsigned dl_logical_channel_manager::pending_bytes(ran_slice_id_t slice_id) cons
   return total_bytes;
 }
 
-void dl_logical_channel_manager::handle_mac_ce_indication(const mac_ce_info& ce)
+[[nodiscard]] bool dl_logical_channel_manager::handle_mac_ce_indication(const mac_ce_info& ce)
 {
   if (ce.ce_lcid == lcid_dl_sch_t::UE_CON_RES_ID) {
     // CON RES is a special case, as it needs to be always scheduled first.
     pending_con_res_id = true;
-    return;
+    return true;
   }
   if (ce.ce_lcid == lcid_dl_sch_t::TA_CMD) {
     auto ce_it = std::find_if(pending_ces.begin(), pending_ces.end(), [](const mac_ce_info& c) {
@@ -276,10 +291,10 @@ void dl_logical_channel_manager::handle_mac_ce_indication(const mac_ce_info& ce)
     });
     if (ce_it != pending_ces.end()) {
       ce_it->ce_payload = ce.ce_payload;
-      return;
+      return true;
     }
   }
-  pending_ces.push_back(ce);
+  return pending_ces.try_push(ce);
 }
 
 unsigned dl_logical_channel_manager::allocate_mac_sdu(dl_msg_lc_info& subpdu, unsigned rem_bytes, lcid_t lcid)
@@ -364,7 +379,7 @@ unsigned dl_logical_channel_manager::allocate_mac_ce(dl_msg_lc_info& subpdu, uns
   if (pending_ces.empty()) {
     return 0;
   }
-  const lcid_dl_sch_t lcid = pending_ces.front().ce_lcid;
+  const lcid_dl_sch_t lcid = pending_ces.top().ce_lcid;
 
   // Derive space needed for CE subheader + payload.
   const unsigned ce_size = lcid.sizeof_ce();
@@ -381,9 +396,9 @@ unsigned dl_logical_channel_manager::allocate_mac_ce(dl_msg_lc_info& subpdu, uns
 
   subpdu.lcid        = lcid;
   subpdu.sched_bytes = ce_size;
-  subpdu.ce_payload  = pending_ces.front().ce_payload;
+  subpdu.ce_payload  = pending_ces.top().ce_payload;
 
-  pending_ces.pop_front();
+  pending_ces.pop();
 
   return alloc_bytes;
 }

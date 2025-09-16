@@ -39,6 +39,7 @@
 #include "srsran/srslog/logger.h"
 #include "srsran/support/executors/task_executor.h"
 #include "srsran/support/srsran_assert.h"
+#include "srsran/support/synchronization/stop_event.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -62,27 +63,22 @@ public:
   /// Creates a dummy radio unit from its configuration.
   explicit ru_dummy_impl(const ru_dummy_configuration& config, ru_dummy_dependencies dependencies) noexcept;
 
-  // See radio_unit interface for documentation.
+  // See the radio_unit interface for documentation.
   ru_controller& get_controller() override { return *this; }
 
-  // See radio_unit interface for documentation.
+  // See the radio_unit interface for documentation.
   ru_downlink_plane_handler& get_downlink_plane_handler() override { return *this; }
 
-  // See radio_unit interface for documentation.
+  // See the radio_unit interface for documentation.
   ru_uplink_plane_handler& get_uplink_plane_handler() override { return *this; }
 
-  // See interface for documentation.
+  // See the radio_unit interface for documentation.
   ru_metrics_collector* get_metrics_collector() override { return are_metrics_enabled ? &metrics_collector : nullptr; }
 
+  // See the radio_unit interface for documentation.
+  ru_center_frequency_controller* get_center_frequency_controller() override { return nullptr; }
+
 private:
-  /// State value in idle.
-  static constexpr uint32_t state_idle = 0xffffffff;
-  /// State value while running.
-  static constexpr uint32_t state_running = 0x80000000;
-  /// State value while the RU is stopping.
-  static constexpr uint32_t state_wait_stop = 0x40000000;
-  /// Stopped state, depends on the maximum processing delay number of slots.
-  const uint32_t state_stopped;
   /// Minimum loop time.
   const std::chrono::microseconds minimum_loop_time = std::chrono::microseconds(10);
 
@@ -100,6 +96,9 @@ private:
 
   // See interface for documentation.
   ru_cfo_controller* get_cfo_controller() override { return nullptr; }
+
+  // See interface for documentation.
+  ru_tx_time_offset_controller* get_tx_time_offset_controller() override { return nullptr; }
 
   // See ru_downlink_plane_handler for documentation.
   void handle_dl_data(const resource_grid_context& context, const shared_resource_grid& grid) override
@@ -134,6 +133,10 @@ private:
     sectors[context.sector].handle_new_uplink_slot(context, grid);
   }
 
+  /// \brief Defer loop task if the RU is running.
+  /// \remark A fatal error is triggered if the executor fails to defer the loop task.
+  void defer_loop();
+
   /// Loop execution task.
   void loop();
 
@@ -145,8 +148,8 @@ private:
   task_executor& executor;
   /// Radio Unit timing notifier.
   ru_timing_notifier& timing_notifier;
-  /// Internal state.
-  std::atomic<uint32_t> internal_state = state_idle;
+  /// Stop control.
+  stop_event_source stop_control;
   /// Slot time in microseconds.
   std::chrono::microseconds slot_duration;
   /// Number of slots is notified in advance of the transmission time.

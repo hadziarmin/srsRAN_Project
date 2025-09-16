@@ -45,11 +45,7 @@ public:
     builder_params.channel_bw_mhz = bs_channel_bandwidth::MHz20;
 
     // Create cell config with space for two PDCCHs in the SearchSpace#1.
-    sched_cell_configuration_request_message cell_cfg_req =
-        sched_config_helper::make_default_sched_cell_configuration_request(builder_params);
-    cell_cfg_req.dl_cfg_common.init_dl_bwp.pdcch_common.search_spaces[1].set_non_ss0_nof_candidates(
-        std::array<uint8_t, 5>{0, 0, 2, 0, 0});
-    add_cell(cell_cfg_req);
+    add_cell(sched_config_helper::make_default_sched_cell_configuration_request(builder_params));
 
     srsran_assert(not this->cell_cfg_list[0].nzp_csi_rs_list.empty(),
                   "This test assumes a setup with NZP CSI-RS enabled");
@@ -182,7 +178,14 @@ TEST_P(scheduler_con_res_msg4_test, while_ue_is_in_fallback_then_common_pucch_is
                          return pucch.crnti == rnti and pucch.format() == pucch_format::FORMAT_1 and
                                 pucch.uci_bits.harq_ack_nof_bits > 0;
                        });
-  }));
+  })) << "Failed to schedule ConRes CE and Msg4 PDCCH, PDSCH and PUCCH for UE in fallback mode";
+
+  slot_point uci_slot = next_slot;
+  // Decrease the slot by one, as the the \ref run_slot() function increase the slot at the end of the function.
+  uci_slot -= 1;
+  // Push an ACK to trigger the Contention Resolution completion in the scheduler.
+  this->push_uci_indication(to_du_cell_index(0), uci_slot);
+  run_slot();
 
   // Enqueue SRB1 data; with the UE in fallback mode, and after the MSG4 has been delivered, both common and dedicated
   // resources should be used.

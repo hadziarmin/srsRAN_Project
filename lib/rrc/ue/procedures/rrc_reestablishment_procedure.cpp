@@ -57,11 +57,15 @@ rrc_reestablishment_procedure::rrc_reestablishment_procedure(
   event_mng(event_mng_),
   logger(logger_)
 {
+  procedure_timeout = context.cell.timers.t311 + context.cfg.rrc_procedure_guard_time_ms;
 }
 
 void rrc_reestablishment_procedure::operator()(coro_context<async_task<void>>& ctx)
 {
   CORO_BEGIN(ctx);
+
+  // Notify metrics about attempted RRC connection reestablishment.
+  metrics_notifier.on_attempted_rrc_connection_reestablishment();
 
   logger.log_debug("\"{}\" for old c-rnti={}, pci={} initialized",
                    name(),
@@ -93,8 +97,7 @@ void rrc_reestablishment_procedure::operator()(coro_context<async_task<void>>& c
   create_srb1();
 
   // Create new transaction for RRC Reestablishment.
-  transaction =
-      event_mng.transactions.create_transaction(std::chrono::milliseconds(context.cfg.rrc_procedure_timeout_ms));
+  transaction = event_mng.transactions.create_transaction(procedure_timeout);
 
   // Send RRC Reestablishment to UE.
   send_rrc_reestablishment();
@@ -110,7 +113,8 @@ void rrc_reestablishment_procedure::operator()(coro_context<async_task<void>>& c
   if (transaction.has_response()) {
     context.state = rrc_state::connected;
 
-    // Notify metrics.
+    // Notify metrics about successful RRC connection reestablishment.
+    metrics_notifier.on_successful_rrc_connection_reestablishment();
     metrics_notifier.on_new_rrc_connection();
 
     // Notify DU Processor to start a Reestablishment Context Modification Routine.
@@ -130,10 +134,8 @@ void rrc_reestablishment_procedure::operator()(coro_context<async_task<void>>& c
     }
 
   } else {
-    logger.log_warning("\"{}\" for old_ue={} timed out after {}ms",
-                       name(),
-                       old_ue_reest_context.ue_index,
-                       context.cfg.rrc_procedure_timeout_ms.count());
+    logger.log_warning(
+        "\"{}\" for old_ue={} timed out after {}ms", name(), old_ue_reest_context.ue_index, procedure_timeout.count());
     logger.log_debug("\"{}\" for old_ue={} failed", name(), old_ue_reest_context.ue_index);
   }
 
@@ -147,7 +149,7 @@ void rrc_reestablishment_procedure::operator()(coro_context<async_task<void>>& c
 
 async_task<void> rrc_reestablishment_procedure::handle_rrc_reestablishment_fallback()
 {
-  context.connection_cause.value = asn1::rrc_nr::establishment_cause_e::mt_access;
+  context.connection_cause = establishment_cause_t::mt_access;
 
   return launch_async([this](coro_context<async_task<void>>& ctx) mutable {
     CORO_BEGIN(ctx);
@@ -160,7 +162,8 @@ async_task<void> rrc_reestablishment_procedure::handle_rrc_reestablishment_fallb
                                                  metrics_notifier,
                                                  ngap_notifier,
                                                  event_mng,
-                                                 logger));
+                                                 logger,
+                                                 true));
 
     if (old_ue_reest_context.ue_index != ue_index_t::invalid and !old_ue_reest_context.old_ue_fully_attached) {
       // The UE exists but still has not established an SRB2 and DRB. Request the release of the old UE.
@@ -222,7 +225,7 @@ bool rrc_reestablishment_procedure::verify_security_context()
   // Get RX short MAC.
   security::sec_short_mac_i short_mac = {};
   uint16_t short_mac_int              = htons(reestablishment_request.rrc_reest_request.ue_id.short_mac_i.to_number());
-  memcpy(short_mac.data(), &short_mac_int, 2);
+  std::memcpy(short_mac.data(), &short_mac_int, 2);
 
   // Get packed varShortMAC-Input.
   asn1::rrc_nr::var_short_mac_input_s var_short_mac_input = {};

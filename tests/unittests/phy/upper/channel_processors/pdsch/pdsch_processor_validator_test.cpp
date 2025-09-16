@@ -133,7 +133,7 @@ const std::vector<test_case_t> pdsch_processor_validator_test_data = {
        pdu.freq_alloc             = rb_allocation::make_type0({1, 0, 1, 0, 1, 0});
        return pdu;
      },
-     R"(Only contiguous allocation is currently supported\.)"},
+     R"(Only contiguous VRB mask allocation is currently supported\.)"},
     {[] {
        pdsch_processor::pdu_t pdu = base_pdu;
        pdu.tbs_lbrm               = units::bytes(0);
@@ -154,7 +154,7 @@ const std::vector<test_case_t> pdsch_processor_validator_test_data = {
        pdu.freq_alloc             = rb_allocation::make_type1(0, 52, vrb_to_prb::create_non_interleaved_common_ss(1));
        return pdu;
      },
-     R"(Invalid BWP configuration, i\.e\., \[0, 52\) for the given RB allocation, i\.e\., \[1, 53\)\.)"},
+     R"(Invalid BWP configuration, i\.e\., \[0, 52\) for the given RB allocation, i\.e\., \[0, 52\)\.)"},
     {[] {
        pdsch_processor::pdu_t pdu = base_pdu;
        pdu.bwp_start_rb           = 0;
@@ -163,7 +163,7 @@ const std::vector<test_case_t> pdsch_processor_validator_test_data = {
        pdu.freq_alloc = rb_allocation::make_type1(0, 52, vrb_to_prb::create_interleaved_common_ss(1, 0, 52));
        return pdu;
      },
-     R"(Invalid BWP configuration, i\.e\., \[0, 52\) for the given RB allocation, i\.e\., non-contiguous\.)"},
+     R"(Invalid BWP configuration, i\.e\., \[0, 52\) for the given RB allocation, i\.e\., \[0, 52\)\.)"},
     {[] {
        pdsch_processor::pdu_t pdu = base_pdu;
        pdu.bwp_start_rb           = 0;
@@ -172,14 +172,14 @@ const std::vector<test_case_t> pdsch_processor_validator_test_data = {
        pdu.freq_alloc             = rb_allocation::make_type1(0, 52, vrb_to_prb::create_interleaved_coreset0(1, 52));
        return pdu;
      },
-     R"(Invalid BWP configuration, i\.e\., \[0, 52\) for the given RB allocation, i\.e\., non-contiguous\.)"},
+     R"(Invalid BWP configuration, i\.e\., \[0, 52\) for the given RB allocation, i\.e\., \[0, 52\)\.)"},
     {[] {
        pdsch_processor::pdu_t pdu = base_pdu;
 
        // Create RE pattern that collides with DM-RS.
        re_pattern reserved_pattern;
-       reserved_pattern.prb_mask = ~prb_bitmap(MAX_RB);
-       reserved_pattern.prb_mask.fill(0, MAX_RB);
+       reserved_pattern.crb_mask = ~crb_bitmap(MAX_RB);
+       reserved_pattern.crb_mask.fill(0, MAX_RB);
        reserved_pattern.symbols = pdu.dmrs_symbol_mask;
        reserved_pattern.re_mask = ~bounded_bitset<NRE>(NRE);
        pdu.reserved.merge(reserved_pattern);
@@ -289,8 +289,8 @@ TEST_P(pdschProcessorFixture, pdschProcessorValidatorDeathTest)
   // Make sure the configuration is invalid.
   error_type<std::string> validator_out = pdu_validator->is_valid(param.get_pdu());
   ASSERT_FALSE(validator_out.has_value()) << "Validation should fail.";
-  ASSERT_TRUE(std::regex_match(validator_out.error(), std::regex(param.expr)))
-      << "The assertion message doesn't match the expected pattern.";
+  ASSERT_TRUE(std::regex_match(validator_out.error(), std::regex(param.expr))) << fmt::format(
+      R"(The assertion message "{}" doesn't match the expected pattern "{}".)", validator_out.error(), param.expr);
 }
 
 // Creates test suite that combines all possible parameters.

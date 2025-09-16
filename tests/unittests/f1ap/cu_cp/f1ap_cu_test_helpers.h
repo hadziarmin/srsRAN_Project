@@ -22,7 +22,6 @@
 
 #pragma once
 
-#include "../common/f1ap_cu_test_messages.h"
 #include "../common/test_helpers.h"
 #include "tests/test_doubles/f1ap/f1c_test_local_gateway.h"
 #include "srsran/cu_cp/cu_cp_types.h"
@@ -217,6 +216,9 @@ private:
 
 /// \brief Creates a dummy UE CONTEXT SETUP REQUEST.
 f1ap_ue_context_setup_request create_ue_context_setup_request(const std::initializer_list<drb_id_t>& drbs_to_add);
+
+/// \brief Creates a dummy GNB-CU CONFIGURATION UPDATE.
+f1ap_gnb_cu_configuration_update create_gnb_cu_configuration_update();
 
 /// Fixture class for F1AP
 class f1ap_cu_test : public ::testing::Test

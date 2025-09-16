@@ -26,7 +26,7 @@
 using namespace srsran;
 using namespace fapi_adaptor;
 
-mac_to_fapi_translator_config generate_translator_config(const mac_fapi_sector_adaptor_config& config)
+static mac_to_fapi_translator_config generate_translator_config(const mac_fapi_sector_adaptor_config& config)
 {
   mac_to_fapi_translator_config out_config;
   out_config.cell_nof_prbs = config.cell_nof_prbs;
@@ -35,7 +35,7 @@ mac_to_fapi_translator_config generate_translator_config(const mac_fapi_sector_a
   return out_config;
 }
 
-mac_to_fapi_translator_dependencies
+static mac_to_fapi_translator_dependencies
 generate_translator_dependencies(mac_fapi_sector_adaptor_dependencies&& dependencies)
 {
   return {srslog::fetch_basic_logger("FAPI"),
@@ -59,7 +59,7 @@ fapi::slot_time_message_notifier& mac_fapi_sector_adaptor_impl::get_slot_time_me
   return fapi_time_translator;
 }
 
-fapi::slot_error_message_notifier& mac_fapi_sector_adaptor_impl::get_slot_error_message_notifier()
+fapi::error_message_notifier& mac_fapi_sector_adaptor_impl::get_error_message_notifier()
 {
   return fapi_error_translator;
 }

@@ -30,14 +30,15 @@
 
 using namespace srsran;
 
-static logical_channel_config::qos_info make_qos(qos_prio_level_t          prio   = qos_prio_level_t::max(),
-                                                 std::chrono::milliseconds pdb    = std::chrono::milliseconds{2000},
-                                                 unsigned                  dl_gbr = 0,
-                                                 unsigned                  ul_gbr = 0)
+static logical_channel_config::qos_info make_qos(qos_prio_level_t          qos_prio = qos_prio_level_t::max(),
+                                                 arp_prio_level_t          arp_prio = arp_prio_level_t::max(),
+                                                 std::chrono::milliseconds pdb      = std::chrono::milliseconds{2000},
+                                                 unsigned                  dl_gbr   = 0,
+                                                 unsigned                  ul_gbr   = 0)
 {
   logical_channel_config::qos_info qos{};
   qos.qos.average_window_ms      = 100;
-  qos.qos.priority               = prio;
+  qos.qos.priority               = qos_prio;
   qos.qos.packet_delay_budget_ms = pdb.count();
 
   if (dl_gbr != 0 and ul_gbr != 0) {
@@ -45,6 +46,7 @@ static logical_channel_config::qos_info make_qos(qos_prio_level_t          prio 
     qos.gbr_qos_info.value().gbr_dl = dl_gbr;
     qos.gbr_qos_info.value().gbr_ul = dl_gbr;
   }
+  qos.arp_priority = arp_prio;
 
   return qos;
 }
@@ -66,7 +68,9 @@ class scheduler_qos_test : public scheduler_test_simulator, public ::testing::Te
   };
 
 public:
-  scheduler_qos_test() : scheduler_test_simulator(4, subcarrier_spacing::kHz30)
+  scheduler_qos_test() :
+    scheduler_test_simulator(
+        scheduler_test_sim_config{.max_scs = subcarrier_spacing::kHz30, .auto_uci = true, .auto_crc = true})
   {
     params = cell_config_builder_profiles::tdd(subcarrier_spacing::kHz30);
 
@@ -124,48 +128,13 @@ public:
   {
     scheduler_test_simulator::run_slot();
 
-    // Handle UCI and CRC indications.
-    uci_indication uci_ind;
-    uci_ind.cell_index = to_du_cell_index(0);
-    uci_ind.slot_rx    = this->last_result_slot();
-    ul_crc_indication crc_ind;
-    crc_ind.cell_index = to_du_cell_index(0);
-    crc_ind.sl_rx      = last_result_slot();
-
-    span<const dl_msg_alloc>  ue_grants = this->last_sched_res_list[0]->dl.ue_grants;
-    span<const ul_sched_info> ul_grants = this->last_sched_res_list[0]->ul.puschs;
-
-    // Handle PUCCHs.
-    for (const pucch_info& pucch : this->last_sched_res_list[to_du_cell_index(0)]->ul.pucchs) {
-      if (pucch.format() == pucch_format::FORMAT_1 and pucch.uci_bits.sr_bits != sr_nof_bits::no_sr) {
-        // Skip SRs for this test.
-        continue;
-      }
-      du_ue_index_t ue_idx = to_du_ue_index((unsigned)pucch.crnti - 0x4601);
-      uci_ind.ucis.push_back(test_helper::create_uci_indication_pdu(ue_idx, pucch));
-    }
-
-    // Handle CRCs and PUSCH UCIs.
-    for (const ul_sched_info& grant : ul_grants) {
-      crc_ind.crcs.emplace_back(test_helper::create_crc_pdu_indication(grant));
-      if (grant.uci.has_value()) {
-        uci_ind.ucis.push_back(
-            test_helper::create_uci_indication_pdu(grant.pusch_cfg.rnti, grant.context.ue_index, grant.uci.value()));
-      }
-    }
-
-    if (not uci_ind.ucis.empty()) {
-      this->sched->handle_uci_indication(uci_ind);
-    }
-    if (not crc_ind.crcs.empty()) {
-      this->sched->handle_crc_indication(crc_ind);
-    }
-
     // Register DL sched bytes.
+    span<const dl_msg_alloc> ue_grants = this->last_sched_res_list[0]->dl.ue_grants;
     for (const dl_msg_alloc& grant : ue_grants) {
       ue_stats_map[grant.context.ue_index].dl_bytes_sum += grant.pdsch_cfg.codewords[0].tb_size_bytes;
     }
     // Register UL sched bytes.
+    span<const ul_sched_info> ul_grants = this->last_sched_res_list[0]->ul.puschs;
     for (const ul_sched_info& grant : ul_grants) {
       ue_stats_map[grant.context.ue_index].ul_bytes_sum += grant.pusch_cfg.tb_size_bytes;
     }
@@ -217,9 +186,12 @@ class scheduler_1_gbr_ue_qos_test : public scheduler_qos_test
 public:
   scheduler_1_gbr_ue_qos_test()
   {
-    auto gbr_qos =
-        make_qos(qos_prio_level_t::max(), std::chrono::milliseconds(2000), gbr_dl_bitrate_bps, gbr_ul_bitrate_bps);
-    auto non_gbr_qos = make_qos(qos_prio_level_t::max(), std::chrono::milliseconds(2000));
+    auto gbr_qos     = make_qos(qos_prio_level_t::max(),
+                            arp_prio_level_t::max(),
+                            std::chrono::milliseconds(2000),
+                            gbr_dl_bitrate_bps,
+                            gbr_ul_bitrate_bps);
+    auto non_gbr_qos = make_qos(qos_prio_level_t::max(), arp_prio_level_t::max(), std::chrono::milliseconds(2000));
 
     add_ue_with_drb_qos(gbr_qos);
 
@@ -270,9 +242,12 @@ class scheduler_saturated_gbr_ue_qos_test : public scheduler_qos_test
 public:
   scheduler_saturated_gbr_ue_qos_test()
   {
-    auto gbr_qos =
-        make_qos(qos_prio_level_t::max(), std::chrono::milliseconds(2000), gbr_dl_bitrate_bps, gbr_ul_bitrate_bps);
-    auto non_gbr_qos = make_qos(qos_prio_level_t::max(), std::chrono::milliseconds(2000));
+    auto gbr_qos     = make_qos(qos_prio_level_t::max(),
+                            arp_prio_level_t::max(),
+                            std::chrono::milliseconds(2000),
+                            gbr_dl_bitrate_bps,
+                            gbr_ul_bitrate_bps);
+    auto non_gbr_qos = make_qos(qos_prio_level_t::max(), arp_prio_level_t::max(), std::chrono::milliseconds(2000));
 
     for (unsigned i = 0; i != nof_gbr_ues; ++i) {
       add_ue_with_drb_qos(gbr_qos);
@@ -329,10 +304,10 @@ TEST_F(scheduler_saturated_gbr_ue_qos_test, when_gbrs_saturate_channel_then_non_
   ASSERT_GT(min_ul_rate, 0.1) << "UEs are starved";
 }
 
-class scheduler_priority_qos_test : public scheduler_qos_test
+class scheduler_qos_priority_test : public scheduler_qos_test
 {
 public:
-  scheduler_priority_qos_test()
+  scheduler_qos_priority_test()
   {
     auto prio_qos     = make_qos(high_prio);
     auto non_prio_qos = make_qos(low_prio);
@@ -352,7 +327,59 @@ public:
   const qos_prio_level_t low_prio         = qos_prio_level_t::max();
 };
 
-TEST_F(scheduler_priority_qos_test, when_channel_is_saturated_then_lc_with_higher_prio_get_higher_traffic)
+TEST_F(scheduler_qos_priority_test, when_channel_is_saturated_then_lc_with_higher_qos_prio_get_higher_traffic)
+{
+  const unsigned MAX_NOF_SLOT_RUNS = 1000;
+
+  for (unsigned r = 0; r != MAX_NOF_SLOT_RUNS; ++r) {
+    this->run_slot();
+  }
+
+  std::vector<double> ue_dl_rate_mbps = this->get_ue_dl_bitrate_mbps();
+  std::vector<double> ue_ul_rate_mbps = this->get_ue_ul_bitrate_mbps();
+
+  test_logger.info("DL bit rates [Mbps]: [{}]", format_bitrates(ue_dl_rate_mbps));
+  test_logger.info("UL bit rates [Mbps]: [{}]", format_bitrates(ue_ul_rate_mbps));
+
+  double min_dl_rate          = *std::min_element(ue_dl_rate_mbps.begin(), ue_dl_rate_mbps.end());
+  double min_ul_rate          = *std::min_element(ue_ul_rate_mbps.begin(), ue_ul_rate_mbps.end());
+  double min_dl_prio_rate     = *std::min_element(ue_dl_rate_mbps.begin(), ue_dl_rate_mbps.begin() + nof_prio_ues);
+  double min_ul_prio_rate     = *std::min_element(ue_ul_rate_mbps.begin(), ue_ul_rate_mbps.begin() + nof_prio_ues);
+  double max_dl_non_prio_rate = *std::max_element(ue_dl_rate_mbps.begin() + nof_prio_ues, ue_dl_rate_mbps.end());
+  double max_ul_non_prio_rate = *std::max_element(ue_ul_rate_mbps.begin() + nof_prio_ues, ue_ul_rate_mbps.end());
+
+  ASSERT_GT(min_dl_prio_rate, max_dl_non_prio_rate) << "Priorities are not respected in DL";
+  ASSERT_GT(min_ul_prio_rate, max_ul_non_prio_rate) << "Priorities are not respected in DL";
+
+  ASSERT_GT(min_dl_rate, 0.1) << "UEs are starved";
+  ASSERT_GT(min_ul_rate, 0.1) << "UEs are starved";
+}
+
+class scheduler_arp_priority_test : public scheduler_qos_test
+{
+public:
+  scheduler_arp_priority_test()
+  {
+    auto prio_qos     = make_qos(qos_prio_level_t::max(), high_prio);
+    auto non_prio_qos = make_qos(qos_prio_level_t::max(), low_prio);
+
+    for (unsigned i = 0; i != nof_prio_ues; ++i) {
+      add_ue_with_drb_qos(prio_qos);
+    }
+
+    for (unsigned i = 0; i != nof_non_prio_ues; ++i) {
+      add_ue_with_drb_qos(non_prio_qos);
+    }
+  }
+
+  const unsigned nof_prio_ues     = 2;
+  const unsigned nof_non_prio_ues = 6;
+  // Note: ARP Priority Level 0 is reserved.
+  const arp_prio_level_t high_prio = arp_prio_level_t{1};
+  const arp_prio_level_t low_prio  = arp_prio_level_t::max();
+};
+
+TEST_F(scheduler_arp_priority_test, when_channel_is_saturated_then_lc_with_higher_arp_prio_get_higher_traffic)
 {
   const unsigned MAX_NOF_SLOT_RUNS = 1000;
 
@@ -385,8 +412,8 @@ class scheduler_pdb_qos_test : public scheduler_qos_test
 public:
   scheduler_pdb_qos_test()
   {
-    auto low_pdb_qos  = make_qos(qos_prio_level_t::max(), low_pdb);
-    auto high_pdb_qos = make_qos(qos_prio_level_t::max(), hi_pdb);
+    auto low_pdb_qos  = make_qos(qos_prio_level_t::max(), arp_prio_level_t::max(), low_pdb);
+    auto high_pdb_qos = make_qos(qos_prio_level_t::max(), arp_prio_level_t::max(), hi_pdb);
 
     for (unsigned i = 0; i != nof_low_pdb_ues; ++i) {
       add_ue_with_drb_qos(low_pdb_qos);

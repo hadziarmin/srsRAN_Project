@@ -24,6 +24,7 @@
 #include "srsran/support/executors/priority_task_worker.h"
 #include "srsran/support/executors/task_worker.h"
 #include "srsran/support/executors/task_worker_pool.h"
+#include "srsran/support/synchronization/sync_event.h"
 #include <future>
 #include <gtest/gtest.h>
 
@@ -36,15 +37,15 @@ using namespace srsran;
 #pragma GCC diagnostic ignored "-Wsuggest-override"
 #endif // __clang__
 
-static_assert(not detail::is_task_executor_ptr<task_worker_executor>::value, "A task_worker_executor is not a pointer");
-static_assert(detail::is_task_executor_ptr<task_worker_executor*>::value, "A task_worker_executor* is a pointer");
-static_assert(detail::is_task_executor_ptr<const task_worker_executor*>::value, "A task_worker_executor* is a pointer");
-static_assert(detail::is_task_executor_ptr<std::unique_ptr<task_worker_executor>>::value,
+static_assert(not is_task_executor_ptr<task_worker_executor>::value, "A task_worker_executor is not a pointer");
+static_assert(is_task_executor_ptr<task_worker_executor*>::value, "A task_worker_executor* is a pointer");
+static_assert(is_task_executor_ptr<const task_worker_executor*>::value, "A task_worker_executor* is a pointer");
+static_assert(is_task_executor_ptr<std::unique_ptr<task_worker_executor>>::value,
               "A unique_ptr<task_worker_executor> is a pointer");
-static_assert(detail::is_task_executor_ptr<const std::unique_ptr<task_worker_executor>>::value,
-              "A unique_ptr<task_worker_executor> is a pointer");
-static_assert(detail::is_task_executor_ptr<std::shared_ptr<task_worker_executor>&>::value,
-              "A shared_ptr<task_worker_executor> is a pointer");
+static_assert(is_task_executor_ptr<const std::unique_ptr<task_worker_executor>>::value,
+              "A const unique_ptr<task_worker_executor> is a pointer");
+static_assert(is_task_executor_ptr<std::shared_ptr<task_worker_executor>&>::value,
+              "A shared_ptr<task_worker_executor>& is a pointer");
 
 static_assert(detail::task_executor_has_can_run_task_inline<task_worker_executor>::value,
               "Task worker executor should allow running tasks inline");
@@ -104,13 +105,14 @@ TYPED_TEST(task_worker_pool_test, correct_initialization)
 
 TYPED_TEST(task_worker_pool_test, worker_pool_runs_single_task)
 {
-  std::promise<void> p;
-  std::future<void>  f = p.get_future();
-  ASSERT_TRUE(this->pool.push_task([&p]() {
-    p.set_value();
+  sync_event        wait_all;
+  std::atomic<bool> task_ran{false};
+  ASSERT_TRUE(this->pool.push_task([token = wait_all.get_token(), &task_ran]() {
     fmt::print("Finished in {}\n", this_thread_name());
+    task_ran = true;
   }));
-  f.get();
+  wait_all.wait();
+  ASSERT_TRUE(task_ran);
 }
 
 TYPED_TEST(task_worker_pool_test, worker_pool_runs_tasks_in_all_workers)
@@ -184,13 +186,14 @@ TEST_P(prio_task_worker_pool_test, correct_initialization)
 
 TEST_P(prio_task_worker_pool_test, prio_worker_pool_runs_single_task)
 {
-  std::promise<void> p;
-  std::future<void>  f = p.get_future();
-  ASSERT_TRUE(this->pool.push_task(enqueue_priority::max, [&p]() {
-    p.set_value();
+  sync_event        wait_all;
+  std::atomic<bool> task_ran{false};
+  ASSERT_TRUE(this->pool.push_task(enqueue_priority::max, [token = wait_all.get_token(), &task_ran]() {
     fmt::print("Finished in {}\n", this_thread_name());
+    task_ran = true;
   }));
-  f.get();
+  wait_all.wait();
+  ASSERT_TRUE(task_ran);
 }
 
 TEST_P(prio_task_worker_pool_test, prio_worker_pool_executor_can_run_inline)

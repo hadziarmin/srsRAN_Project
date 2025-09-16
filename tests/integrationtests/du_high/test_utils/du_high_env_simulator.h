@@ -32,15 +32,20 @@
 #include "srsran/scheduler/config/cell_config_builder_params.h"
 
 namespace srsran {
+
+class io_broker;
+
 namespace srs_du {
 
 class dummy_f1c_test_client : public f1c_connection_client
 {
 public:
+  bool cell_start_on_f1_setup = true;
+
   /// Last messages sent to the CU.
   std::vector<f1ap_message> last_f1ap_msgs;
 
-  dummy_f1c_test_client(task_executor& test_exec_);
+  dummy_f1c_test_client(task_executor& test_exec_, bool cell_start_on_f1_setup_ = true);
 
   std::unique_ptr<f1ap_message_notifier>
   handle_du_connection_request(std::unique_ptr<f1ap_message_notifier> du_rx_pdu_notifier) override;
@@ -76,6 +81,8 @@ struct du_high_env_sim_params {
   std::optional<cell_config_builder_params> builder_params;
   std::optional<pucch_builder_params>       pucch_cfg;
   std::optional<unsigned>                   prach_frequency_start;
+  std::optional<srs_periodicity>            srs_period;
+  bool                                      active_cells_on_start = true;
 };
 
 du_high_configuration create_du_high_configuration(const du_high_env_sim_params& params = {});
@@ -84,7 +91,7 @@ class du_high_env_simulator
 {
 public:
   du_high_env_simulator(du_high_env_sim_params params = du_high_env_sim_params{});
-  du_high_env_simulator(const du_high_configuration& du_hi_cfg);
+  du_high_env_simulator(const du_high_configuration& du_hi_cfg, bool active_cells_on_start = true);
   virtual ~du_high_env_simulator();
 
   bool add_ue(rnti_t rnti, du_cell_index_t cell_index = to_du_cell_index(0));
@@ -114,11 +121,13 @@ public:
 
   virtual void handle_slot_results(du_cell_index_t cell_index);
 
-  du_high_worker_manager    workers;
-  timer_manager             timers;
-  dummy_f1c_test_client     cu_notifier;
-  cu_up_simulator           cu_up_sim;
-  dummy_du_metrics_notifier du_metrics;
+  du_high_worker_manager                workers;
+  timer_manager                         timers;
+  std::unique_ptr<io_broker>            broker;
+  std::unique_ptr<mac_clock_controller> timer_ctrl;
+  dummy_f1c_test_client                 cu_notifier;
+  cu_up_simulator                       cu_up_sim;
+  dummy_du_metrics_notifier             du_metrics;
 
   du_high_configuration    du_high_cfg;
   du_high_dependencies     du_hi_dependencies;

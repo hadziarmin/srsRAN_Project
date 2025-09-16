@@ -60,6 +60,7 @@ ngap_test::ngap_test() :
   ngap = create_ngap(ngap_cfg, cu_cp_notifier, *cu_cp_cfg.ngap.ngaps.front().n2_gw, timers, ctrl_worker);
 
   cu_cp_notifier.connect_ngap(ngap->get_ngap_ue_context_removal_handler());
+  n2_gw.attach_handler(&dummy_amf);
 
   // Initiate N2 TNL association to AMF.
   report_fatal_error_if_not(ngap->handle_amf_tnl_connection_request(), "Unable to establish connection to AMF");
@@ -169,7 +170,9 @@ void ngap_test::run_pdu_session_resource_setup(ue_index_t ue_index, pdu_session_
   auto& ue = test_ues.at(ue_index);
 
   ngap_message pdu_session_resource_setup_request = generate_valid_pdu_session_resource_setup_request_message(
-      ue.amf_ue_id.value(), ue.ran_ue_id.value(), {{pdu_session_id, {{uint_to_qos_flow_id(1), 9}}}});
+      ue.amf_ue_id.value(),
+      ue.ran_ue_id.value(),
+      {{pdu_session_id, {pdu_session_type_t::ipv4, {{uint_to_qos_flow_id(1), 9}}}}});
   ngap->handle_message(pdu_session_resource_setup_request);
 }
 

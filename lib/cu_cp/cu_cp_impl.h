@@ -30,6 +30,7 @@
 #include "adapters/nrppa_adapters.h"
 #include "adapters/rrc_du_adapters.h"
 #include "adapters/rrc_ue_adapters.h"
+#include "cu_configurator_impl.h"
 #include "cu_cp_controller/cu_cp_controller.h"
 #include "cu_cp_impl_interface.h"
 #include "cu_up_processor/cu_up_processor_repository.h"
@@ -86,7 +87,9 @@ public:
                                                        common_task_scheduler&     common_task_sched_);
 
   // CU-UP handler.
+  void handle_bearer_context_release_request(const cu_cp_bearer_context_release_request& msg) override;
   void handle_bearer_context_inactivity_notification(const cu_cp_inactivity_notification& msg) override;
+  void handle_e1_release_request(cu_up_index_t cu_up_index, const std::vector<ue_index_t>& ue_list) override;
 
   // cu_cp_rrc_ue_interface.
   rrc_ue_reestablishment_context_response
@@ -95,6 +98,7 @@ public:
 
   void             handle_rrc_reestablishment_failure(const cu_cp_ue_context_release_request& request) override;
   void             handle_rrc_reestablishment_complete(ue_index_t old_ue_index) override;
+  void             handle_rrc_reconf_complete_indicator(ue_index_t ue_index) override;
   async_task<bool> handle_ue_context_transfer(ue_index_t ue_index, ue_index_t old_ue_index) override;
   async_task<void> handle_ue_context_release(const cu_cp_ue_context_release_request& request) override;
 
@@ -107,7 +111,7 @@ public:
                                        const cu_cp_ue_context_release_request& ue_context_release_request) override;
 
   // cu_cp_ngap_handler.
-  bool handle_handover_request(ue_index_t ue_index, security::security_context sec_ctxt) override;
+  bool handle_handover_request(ue_index_t ue_index, const security::security_context& sec_ctxt) override;
   async_task<expected<ngap_init_context_setup_response, ngap_init_context_setup_failure>>
   handle_new_initial_context_setup_request(const ngap_init_context_setup_request& request) override;
   async_task<cu_cp_pdu_session_resource_setup_response>
@@ -136,9 +140,9 @@ public:
 
   // cu_cp_measurement_handler.
   std::optional<rrc_meas_cfg>
-       handle_measurement_config_request(ue_index_t                  ue_index,
-                                         nr_cell_identity            nci,
-                                         std::optional<rrc_meas_cfg> current_meas_config = std::nullopt) override;
+       handle_measurement_config_request(ue_index_t                         ue_index,
+                                         nr_cell_identity                   nci,
+                                         const std::optional<rrc_meas_cfg>& current_meas_config = std::nullopt) override;
   void handle_measurement_report(const ue_index_t ue_index, const rrc_meas_results& meas_results) override;
 
   // cu_cp_measurement_config_handler.
@@ -157,9 +161,12 @@ public:
   cu_cp_mobility_command_handler& get_mobility_command_handler() override { return mobility_mng; }
   metrics_handler&                get_metrics_handler() override { return *metrics_hdlr; }
 
+  // cu_cp_amf_reconnection_handler.
+  void handle_amf_reconnection(amf_index_t amf_index) override;
+
   // cu_cp public interface.
-  cu_cp_f1c_handler&                     get_f1c_handler() override { return controller->get_f1c_handler(); }
-  cu_cp_e1_handler&                      get_e1_handler() override { return controller->get_e1_handler(); }
+  cu_cp_f1c_handler&                     get_f1c_handler() override { return controller.get_f1c_handler(); }
+  cu_cp_e1_handler&                      get_e1_handler() override { return controller.get_e1_handler(); }
   cu_cp_e1ap_event_handler&              get_cu_cp_e1ap_handler() override { return *this; }
   cu_cp_ng_handler&                      get_ng_handler() override { return *this; }
   cu_cp_ngap_handler&                    get_cu_cp_ngap_handler() override { return *this; }
@@ -171,6 +178,7 @@ public:
   cu_cp_mobility_manager_handler&        get_cu_cp_mobility_manager_handler() override { return *this; }
   cu_cp_ue_removal_handler&              get_cu_cp_ue_removal_handler() override { return *this; }
   cu_cp_ue_context_manipulation_handler& get_cu_cp_ue_context_handler() override { return *this; }
+  cu_cp_amf_reconnection_handler&        get_cu_cp_amf_reconnection_handler() override { return *this; }
   cu_configurator&                       get_cu_configurator() override { return cu_cp_cfgtr; }
 
 private:
@@ -246,7 +254,7 @@ private:
   mobility_manager mobility_mng;
 
   // Handler of the CU-CP connections to other remote nodes (e.g. AMF, CU-UPs, DUs).
-  std::unique_ptr<cu_cp_controller> controller;
+  cu_cp_controller controller;
 
   std::unique_ptr<metrics_handler> metrics_hdlr;
 
@@ -254,7 +262,11 @@ private:
 
   std::atomic<bool> stopped{false};
 
-  cu_configurator cu_cp_cfgtr;
+  cu_configurator_impl cu_cp_cfgtr;
+
+  // Metrics report session for the lifetime of the CU-CP.
+  // Used, e.g., for logging metrics and JSON metrics.
+  std::unique_ptr<metrics_report_session> metrics_session;
 };
 
 } // namespace srs_cu_cp

@@ -26,7 +26,7 @@
 #include "srsran/asn1/asn1_utils.h"
 #include "srsran/asn1/e1ap/e1ap_ies.h"
 #include "srsran/asn1/e1ap/e1ap_pdu_contents.h"
-#include "srsran/ran/bcd_helper.h"
+#include "srsran/e1ap/cu_cp/e1ap_cu_cp_bearer_context_update.h"
 #include "srsran/ran/qos/qos_prio_level.h"
 
 namespace srsran {
@@ -91,7 +91,7 @@ inline void fill_asn1_qos_flow_info_item(asn1::e1ap::qos_flow_qos_param_item_s& 
 
   // Fill NG RAN alloc retention prio.
   asn1_qos_flow_info_item.qos_flow_level_qos_params.ngra_nalloc_retention_prio.prio_level =
-      qos_flow_level_params.ng_ran_alloc_retention.prio_level_arp;
+      qos_flow_level_params.ng_ran_alloc_retention.prio_level_arp.value();
   asn1_qos_flow_info_item.qos_flow_level_qos_params.ngra_nalloc_retention_prio.pre_emption_cap.value =
       qos_flow_level_params.ng_ran_alloc_retention.may_trigger_preemption
           ? asn1::e1ap::pre_emption_cap_opts::may_trigger_pre_emption
@@ -140,8 +140,8 @@ inline void fill_asn1_qos_flow_info_item(asn1::e1ap::qos_flow_qos_param_item_s& 
 
   // Fill paging policy indication.
   if (qos_flow_level_params.paging_policy_ind.has_value()) {
-    asn1_qos_flow_info_item.qos_flow_level_qos_params.paging_policy_ind_present = true;
-    asn1_qos_flow_info_item.qos_flow_level_qos_params.paging_policy_ind =
+    asn1_qos_flow_info_item.qos_flow_level_qos_params.paging_policy_idx_present = true;
+    asn1_qos_flow_info_item.qos_flow_level_qos_params.paging_policy_idx =
         qos_flow_level_params.paging_policy_ind.value();
   }
 
@@ -252,6 +252,20 @@ inline void fill_asn1_drb_to_setup_item(asn1::e1ap::drb_to_setup_item_ng_ran_s& 
   }
 }
 
+inline asn1::e1ap::pdu_session_type_e pdu_session_type_to_asn1(const pdu_session_type_t& pdu_session_type)
+{
+  switch (pdu_session_type) {
+    case pdu_session_type_t::ipv4:
+      return asn1::e1ap::pdu_session_type_e::ipv4;
+    case pdu_session_type_t::ipv6:
+      return asn1::e1ap::pdu_session_type_e::ipv6;
+    case pdu_session_type_t::ipv4v6:
+      return asn1::e1ap::pdu_session_type_e::ipv4v6;
+    default:
+      return asn1::e1ap::pdu_session_type_e::ethernet;
+  }
+}
+
 inline void fill_asn1_bearer_context_setup_request(asn1::e1ap::bearer_context_setup_request_s& asn1_request,
                                                    const e1ap_bearer_context_setup_request&    request)
 {
@@ -292,7 +306,7 @@ inline void fill_asn1_bearer_context_setup_request(asn1::e1ap::bearer_context_se
     asn1_pdu_session_res_item.pdu_session_id = pdu_session_id_to_uint(pdu_session_res_item.pdu_session_id);
 
     // Fill PDU session type.
-    asn1::string_to_enum(asn1_pdu_session_res_item.pdu_session_type, pdu_session_res_item.pdu_session_type);
+    asn1_pdu_session_res_item.pdu_session_type = pdu_session_type_to_asn1(pdu_session_res_item.pdu_session_type);
 
     // Fill S-NSSAI.
     asn1_pdu_session_res_item.snssai = snssai_to_e1ap_asn1(pdu_session_res_item.snssai);
@@ -572,7 +586,7 @@ inline void fill_asn1_bearer_context_modification_request(asn1::e1ap::bearer_con
           asn1_res_to_mod_item.drb_to_setup_list_ng_ran.push_back(asn1_drb_to_setup_item);
         }
 
-        for (const auto& drb_to_mod_item : res_to_mod_item.drb_to_modify_list_ng_ran) {
+        for (const e1ap_drb_to_modify_item_ng_ran& drb_to_mod_item : res_to_mod_item.drb_to_modify_list_ng_ran) {
           asn1::e1ap::drb_to_modify_item_ng_ran_s asn1_drb_to_mod_item;
 
           asn1_drb_to_mod_item.drb_id = drb_id_to_uint(drb_to_mod_item.drb_id);
@@ -587,6 +601,11 @@ inline void fill_asn1_bearer_context_modification_request(asn1::e1ap::bearer_con
           if (drb_to_mod_item.pdcp_cfg.has_value()) {
             asn1_drb_to_mod_item.pdcp_cfg_present = true;
             asn1_drb_to_mod_item.pdcp_cfg         = pdcp_config_to_e1ap_asn1(drb_to_mod_item.pdcp_cfg.value());
+          }
+
+          if (drb_to_mod_item.pdcp_sn_status_request.has_value() && *drb_to_mod_item.pdcp_sn_status_request) {
+            asn1_drb_to_mod_item.pdcp_sn_status_request_present = true;
+            asn1_drb_to_mod_item.pdcp_sn_status_request         = asn1::e1ap::pdcp_sn_status_request_opts::requested;
           }
 
           asn1_res_to_mod_item.drb_to_modify_list_ng_ran.push_back(asn1_drb_to_mod_item);
@@ -611,7 +630,7 @@ inline void fill_asn1_bearer_context_modification_request(asn1::e1ap::bearer_con
         asn1_res_to_setup_mod_item.pdu_session_id = pdu_session_id_to_uint(res_to_setup_mod_item.pdu_session_id);
 
         // Fill PDU session type.
-        asn1::string_to_enum(asn1_res_to_setup_mod_item.pdu_session_type, res_to_setup_mod_item.pdu_session_type);
+        asn1_res_to_setup_mod_item.pdu_session_type = pdu_session_type_to_asn1(res_to_setup_mod_item.pdu_session_type);
 
         // Fill S-NSSAI.
         asn1_res_to_setup_mod_item.snssai = snssai_to_e1ap_asn1(res_to_setup_mod_item.snssai);
@@ -908,7 +927,7 @@ inline void fill_e1ap_bearer_context_modification_response(
             // Fill PDCP SN status info.
             if (asn1_drb_mod_item.pdcp_sn_status_info_present) {
               auto& asn1_pdcp_sn_status_info = asn1_drb_mod_item.pdcp_sn_status_info;
-
+              drb_mod_item.pdcp_sn_status_info.emplace();
               drb_mod_item.pdcp_sn_status_info.value().pdcp_status_transfer_ul.count_value =
                   e1ap_asn1_pdcp_count_to_pdcp_count(asn1_pdcp_sn_status_info.pdcp_status_transfer_ul.count_value);
 

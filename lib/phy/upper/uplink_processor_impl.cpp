@@ -21,6 +21,7 @@
  */
 
 #include "uplink_processor_impl.h"
+#include "srsran/adt/scope_exit.h"
 #include "srsran/instrumentation/traces/du_traces.h"
 #include "srsran/phy/support/prach_buffer.h"
 #include "srsran/phy/support/prach_buffer_context.h"
@@ -28,6 +29,7 @@
 #include "srsran/phy/upper/channel_coding/ldpc/ldpc.h"
 #include "srsran/phy/upper/unique_rx_buffer.h"
 #include "srsran/phy/upper/upper_phy_rx_results_notifier.h"
+#include "srsran/support/rtsan.h"
 
 using namespace srsran;
 
@@ -52,15 +54,19 @@ uplink_processor_impl::uplink_processor_impl(std::unique_ptr<prach_detector>  pr
                                              std::unique_ptr<pusch_processor> pusch_proc_,
                                              std::unique_ptr<pucch_processor> pucch_proc_,
                                              std::unique_ptr<srs_estimator>   srs_,
+                                             std::unique_ptr<resource_grid>   grid_,
                                              task_executor_collection&        task_executors_,
                                              rx_buffer_pool&                  rm_buffer_pool_,
                                              upper_phy_rx_results_notifier&   notifier_,
                                              unsigned                         max_nof_prb,
                                              unsigned                         max_nof_layers) :
+  grid_ref_counter(get_grid_ref_counter()),
+  pdu_repository(*grid_, grid_ref_counter, state_machine),
   prach(std::move(prach_)),
   pusch_proc(std::move(pusch_proc_)),
   pucch_proc(std::move(pucch_proc_)),
   srs(std::move(srs_)),
+  grid(std::move(grid_)),
   task_executors(task_executors_),
   dummy(*this),
   rm_buffer_pool(rm_buffer_pool_),
@@ -76,8 +82,8 @@ uplink_processor_impl::uplink_processor_impl(std::unique_ptr<prach_detector>  pr
 
 uplink_slot_processor& uplink_processor_impl::get_slot_processor(slot_point slot)
 {
-  // If the PDU repository configured slot does not match with the slot, then give the dummy instance.
-  if (!pdu_repository.is_slot_valid(slot)) {
+  // If the slot configured in the state machine does not match the given slot, give the dummy instance.
+  if (!state_machine.is_slot_valid(slot)) {
     return dummy;
   }
 
@@ -86,13 +92,21 @@ uplink_slot_processor& uplink_processor_impl::get_slot_processor(slot_point slot
 
 void uplink_processor_impl::stop()
 {
-  pdu_repository.stop();
+  state_machine.stop();
 }
 
 unique_uplink_pdu_slot_repository uplink_processor_impl::get_pdu_slot_repository(slot_point slot)
 {
+  // It is not possible to configure a new slot if the resource grid is still present in a scope.
+  if (grid_ref_counter != 0) {
+    return {};
+  }
+
+  // Discard current slot if possible.
+  discard_slot();
+
   // Try to configure a new slot.
-  if (!pdu_repository.reserve_on_new_slot(slot)) {
+  if (!state_machine.start_new_slot(slot)) {
     // Return an invalid repository.
     return {};
   }
@@ -102,13 +116,23 @@ unique_uplink_pdu_slot_repository uplink_processor_impl::get_pdu_slot_repository
   count_pusch_adaptors  = 0;
   nof_processed_symbols = 0;
   rx_payload_pool.reset();
+  pdu_repository.clear_queues();
 
   // Create a valid unique PDU slot repository.
   return unique_uplink_pdu_slot_repository(pdu_repository);
 }
 
-void uplink_processor_impl::handle_rx_symbol(const shared_resource_grid& grid, unsigned end_symbol_index)
+void uplink_processor_impl::handle_rx_symbol(unsigned end_symbol_index, bool is_valid)
 {
+  // Try locking the slot processor. This prevents that the processor handle symbols and discards from different
+  // threads concurrently.
+  if (!state_machine.start_handle_rx_symbol()) {
+    return;
+  }
+
+  // Unlock the slot processor when returning from this method.
+  auto execute_on_exit = make_scope_exit([this]() { state_machine.finish_handle_rx_symbol(); });
+
   // Verify that the symbol index is in increasing order.
   if (end_symbol_index < nof_processed_symbols) {
     logger.warning(current_slot.sfn(),
@@ -124,30 +148,69 @@ void uplink_processor_impl::handle_rx_symbol(const shared_resource_grid& grid, u
     rm_buffer_pool.run_slot(current_slot);
   }
 
+  // If the OFDM symbol is not valid, discard all PDUs for the rest of the slot.
+  if (!is_valid) {
+    // Iterate all symbols that have not been processed yet. As the processor might be executing asynchronous all
+    // discarded PDUs must call state_machine.on_create_pdu_task and state_machine.on_finish_processing_pdu for managing
+    // the state machine correctly.
+    for (unsigned i_symbol = nof_processed_symbols; i_symbol != MAX_NSYMB_PER_SLOT; ++i_symbol) {
+      for (const auto& pdu : pdu_repository.get_pucch_pdus(i_symbol)) {
+        if (state_machine.on_create_pdu_task()) {
+          notify_discard_pucch(pdu);
+        }
+      }
+
+      for (const auto& collection : pdu_repository.get_pucch_f1_repository(i_symbol)) {
+        if (state_machine.on_create_pdu_task()) {
+          notify_discard_pucch(collection);
+        }
+      }
+
+      for (const auto& pdu : pdu_repository.get_pusch_pdus(i_symbol)) {
+        if (state_machine.on_create_pdu_task()) {
+          notify_discard_pusch(pdu);
+        }
+      }
+
+      for ([[maybe_unused]] const auto& pdu : pdu_repository.get_srs_pdus(i_symbol)) {
+        if (state_machine.on_create_pdu_task()) {
+          state_machine.on_finish_processing_pdu();
+        }
+      }
+    }
+
+    return;
+  }
+
   for (unsigned end_processed_symbol = std::min(end_symbol_index + 1, MAX_NSYMB_PER_SLOT);
        nof_processed_symbols != end_processed_symbol;
        ++nof_processed_symbols) {
     for (const auto& pdu : pdu_repository.get_pucch_pdus(nof_processed_symbols)) {
-      process_pucch(grid, pdu);
+      process_pucch(pdu);
     }
 
     for (const auto& collection : pdu_repository.get_pucch_f1_repository(nof_processed_symbols)) {
-      process_pucch_f1(grid, collection);
+      process_pucch_f1(collection);
     }
 
     for (const auto& pdu : pdu_repository.get_pusch_pdus(nof_processed_symbols)) {
-      process_pusch(grid, pdu);
+      process_pusch(pdu);
     }
 
     for (const auto& pdu : pdu_repository.get_srs_pdus(nof_processed_symbols)) {
-      process_srs(grid, pdu);
+      process_srs(pdu);
     }
   }
 }
 
 void uplink_processor_impl::process_prach(const prach_buffer& buffer, const prach_buffer_context& context_)
 {
-  bool success = task_executors.prach_executor.execute([this, &buffer, context_]() {
+  // Notify the creation of the PRACH detection task.
+  if (!state_machine.on_prach_detection()) {
+    return;
+  }
+
+  bool success = task_executors.prach_executor.execute([this, &buffer, context_]() noexcept SRSRAN_RTSAN_NONBLOCKING {
     trace_point tp = l1_ul_tracer.now();
 
     ul_prach_results ul_results;
@@ -158,18 +221,21 @@ void uplink_processor_impl::process_prach(const prach_buffer& buffer, const prac
     notifier.on_new_prach_results(ul_results);
 
     l1_ul_tracer << trace_event("process_prach", tp);
+
+    // Notify the end of the PRACH detection.
+    state_machine.on_end_prach_detection();
   });
 
   if (!success) {
     logger.warning(current_slot.sfn(), current_slot.slot_index(), "Failed to execute PRACH. Ignoring detection.");
+    state_machine.on_end_prach_detection();
   }
 }
 
-void uplink_processor_impl::process_pusch(const shared_resource_grid&                  grid,
-                                          const uplink_pdu_slot_repository::pusch_pdu& pdu)
+void uplink_processor_impl::process_pusch(const uplink_pdu_slot_repository::pusch_pdu& pdu)
 {
   // Notify the creation of the execution task.
-  if (!pdu_repository.on_create_pdu_task()) {
+  if (!state_machine.on_create_pdu_task()) {
     return;
   }
 
@@ -211,22 +277,21 @@ void uplink_processor_impl::process_pusch(const shared_resource_grid&           
   }
 
   // Try to enqueue asynchronous processing.
-  bool success = task_executors.pusch_executor.execute(
-      [this, grid2 = grid.copy(), data, rm_buffer2 = std::move(rm_buffer), &pdu]() mutable {
-        // Select and configure notifier adaptor.
-        // Assume that count_pusch_adaptors will not exceed MAX_PUSCH_PDUS_PER_SLOT.
-        unsigned                         notifier_adaptor_id = count_pusch_adaptors.fetch_add(1);
-        pusch_processor_result_notifier& processor_notifier  = pusch_adaptors[notifier_adaptor_id].configure(
-            notifier, to_rnti(pdu.pdu.rnti), pdu.pdu.slot, to_harq_id(pdu.harq_id), data, [this]() {
-              pdu_repository.on_finish_processing_pdu();
-            });
+  bool success = task_executors.pusch_executor.defer([this, data, rm_buffer2 = std::move(rm_buffer), &pdu]() mutable {
+    // Select and configure notifier adaptor.
+    // Assume that count_pusch_adaptors will not exceed MAX_PUSCH_PDUS_PER_SLOT.
+    unsigned                         notifier_adaptor_id = count_pusch_adaptors.fetch_add(1);
+    pusch_processor_result_notifier& processor_notifier  = pusch_adaptors[notifier_adaptor_id].configure(
+        notifier, to_rnti(pdu.pdu.rnti), pdu.pdu.slot, to_harq_id(pdu.harq_id), data, [this]() {
+          state_machine.on_finish_processing_pdu();
+        });
 
-        trace_point tp = l1_ul_tracer.now();
+    trace_point tp = l1_ul_tracer.now();
 
-        pusch_proc->process(data, std::move(rm_buffer2), processor_notifier, grid2.get_reader(), pdu.pdu);
+    pusch_proc->process(data, std::move(rm_buffer2), processor_notifier, grid->get_reader(), pdu.pdu);
 
-        l1_ul_tracer << trace_event("process_pusch", tp);
-      });
+    l1_ul_tracer << trace_event("process_pusch", tp);
+  });
 
   // Report the execution failure.
   if (!success) {
@@ -235,15 +300,14 @@ void uplink_processor_impl::process_pusch(const shared_resource_grid&           
   }
 }
 
-void uplink_processor_impl::process_pucch(const shared_resource_grid&                  grid,
-                                          const uplink_pdu_slot_repository::pucch_pdu& pdu)
+void uplink_processor_impl::process_pucch(const uplink_pdu_slot_repository::pucch_pdu& pdu)
 {
   // Notify the creation of the execution task.
-  if (!pdu_repository.on_create_pdu_task()) {
+  if (!state_machine.on_create_pdu_task()) {
     return;
   }
 
-  bool success = task_executors.pucch_executor.execute([this, grid2 = grid.copy(), &pdu]() {
+  bool success = task_executors.pucch_executor.defer([this, &pdu]() {
     trace_point tp = l1_ul_tracer.now();
 
     pucch_processor_result proc_result;
@@ -251,7 +315,7 @@ void uplink_processor_impl::process_pucch(const shared_resource_grid&           
     switch (pdu.context.format) {
       case pucch_format::FORMAT_0: {
         const auto& format0 = std::get<pucch_processor::format0_configuration>(pdu.config);
-        proc_result         = pucch_proc->process(grid2.get_reader(), format0);
+        proc_result         = pucch_proc->process(grid->get_reader(), format0);
         l1_ul_tracer << trace_event("pucch0", tp);
       } break;
       case pucch_format::FORMAT_1:
@@ -259,17 +323,17 @@ void uplink_processor_impl::process_pucch(const shared_resource_grid&           
         break;
       case pucch_format::FORMAT_2: {
         const auto& format2 = std::get<pucch_processor::format2_configuration>(pdu.config);
-        proc_result         = pucch_proc->process(grid2.get_reader(), format2);
+        proc_result         = pucch_proc->process(grid->get_reader(), format2);
         l1_ul_tracer << trace_event("pucch2", tp);
       } break;
       case pucch_format::FORMAT_3: {
         const auto& format3 = std::get<pucch_processor::format3_configuration>(pdu.config);
-        proc_result         = pucch_proc->process(grid2.get_reader(), format3);
+        proc_result         = pucch_proc->process(grid->get_reader(), format3);
         l1_ul_tracer << trace_event("pucch3", tp);
       } break;
       case pucch_format::FORMAT_4: {
         const auto& format4 = std::get<pucch_processor::format4_configuration>(pdu.config);
-        proc_result         = pucch_proc->process(grid2.get_reader(), format4);
+        proc_result         = pucch_proc->process(grid->get_reader(), format4);
         l1_ul_tracer << trace_event("pucch4", tp);
       } break;
       default:
@@ -283,7 +347,7 @@ void uplink_processor_impl::process_pucch(const shared_resource_grid&           
 
     // Notify the PUCCH results.
     notifier.on_new_pucch_results(result);
-    pdu_repository.on_finish_processing_pdu();
+    state_machine.on_finish_processing_pdu();
   });
 
   // Report failed execution.
@@ -294,20 +358,19 @@ void uplink_processor_impl::process_pucch(const shared_resource_grid&           
   }
 }
 
-void uplink_processor_impl::process_pucch_f1(const shared_resource_grid&                                 grid,
-                                             const uplink_pdu_slot_repository_impl::pucch_f1_collection& collection)
+void uplink_processor_impl::process_pucch_f1(const uplink_pdu_slot_repository_impl::pucch_f1_collection& collection)
 {
   // Notify the creation of the execution task.
-  if (!pdu_repository.on_create_pdu_task()) {
+  if (!state_machine.on_create_pdu_task()) {
     return;
   }
 
-  bool success = task_executors.pucch_executor.execute([this, grid2 = grid.copy(), &collection]() {
+  bool success = task_executors.pucch_executor.defer([this, &collection]() {
     trace_point tp = l1_ul_tracer.now();
 
     // Process all PUCCH Format 1 in one go.
     const pucch_format1_map<pucch_processor_result>& results =
-        pucch_proc->process(grid2.get_reader(), collection.config);
+        pucch_proc->process(grid->get_reader(), collection.config);
 
     // Iterate each UE context.
     for (const auto& entry : collection.ue_contexts) {
@@ -341,7 +404,7 @@ void uplink_processor_impl::process_pucch_f1(const shared_resource_grid&        
       notifier.on_new_pucch_results(notifier_result);
     }
     l1_ul_tracer << trace_event("pucch1", tp);
-    pdu_repository.on_finish_processing_pdu();
+    state_machine.on_finish_processing_pdu();
   });
 
   // Notify the discarded transmissions if the executor failed.
@@ -353,31 +416,30 @@ void uplink_processor_impl::process_pucch_f1(const shared_resource_grid&        
   }
 }
 
-void uplink_processor_impl::process_srs(const shared_resource_grid&                grid,
-                                        const uplink_pdu_slot_repository::srs_pdu& pdu)
+void uplink_processor_impl::process_srs(const uplink_pdu_slot_repository::srs_pdu& pdu)
 {
   // Notify the creation of the execution task.
-  if (!pdu_repository.on_create_pdu_task()) {
+  if (!state_machine.on_create_pdu_task()) {
     return;
   }
 
-  bool success = task_executors.srs_executor.execute([this, grid2 = grid.copy(), &pdu]() {
+  bool success = task_executors.srs_executor.defer([this, &pdu]() {
     trace_point tp = l1_ul_tracer.now();
 
     ul_srs_results result;
     result.context          = pdu.context;
-    result.processor_result = srs->estimate(grid2.get_reader(), pdu.config);
+    result.processor_result = srs->estimate(grid->get_reader(), pdu.config);
 
     l1_ul_tracer << trace_event("process_srs", tp);
 
     notifier.on_new_srs_results(result);
-    pdu_repository.on_finish_processing_pdu();
+    state_machine.on_finish_processing_pdu();
   });
 
   if (!success) {
     logger.warning(
         pdu.context.slot.sfn(), pdu.context.slot.slot_index(), "Failed to execute SRS. Ignoring processing.");
-    pdu_repository.on_finish_processing_pdu();
+    state_machine.on_finish_processing_pdu();
   }
 }
 
@@ -397,7 +459,7 @@ void uplink_processor_impl::notify_discard_pusch(const uplink_pdu_slot_repositor
     notifier.on_new_pusch_results_control(discarded_results);
   }
 
-  pdu_repository.on_finish_processing_pdu();
+  state_machine.on_finish_processing_pdu();
 }
 
 void uplink_processor_impl::notify_discard_pucch(const uplink_pdu_slot_repository::pucch_pdu& pdu)
@@ -410,7 +472,7 @@ void uplink_processor_impl::notify_discard_pucch(const uplink_pdu_slot_repositor
     ul_pucch_results discarded_results = ul_pucch_results::create_discarded(pdu.context, nof_harq_ack);
     notifier.on_new_pucch_results(discarded_results);
   }
-  pdu_repository.on_finish_processing_pdu();
+  state_machine.on_finish_processing_pdu();
 }
 
 void uplink_processor_impl::notify_discard_pucch(const uplink_pdu_slot_repository_impl::pucch_f1_collection& collection)
@@ -427,37 +489,44 @@ void uplink_processor_impl::notify_discard_pucch(const uplink_pdu_slot_repositor
       notifier.on_new_pucch_results(discarded_results);
     }
   }
-  pdu_repository.on_finish_processing_pdu();
+  state_machine.on_finish_processing_pdu();
 }
 
 void uplink_processor_impl::discard_slot()
 {
+  // Notify to the repository the discard of the slot. It skips the discard if the current state does not require it.
+  if (!state_machine.start_discard_slot()) {
+    return;
+  }
+
   logger.warning(current_slot.sfn(), current_slot.slot_index(), "Discarded uplink slot. Ignoring processing.");
 
-  // Iterate all possible symbols.
-  for (unsigned i_symbol = 0; i_symbol != MAX_NSYMB_PER_SLOT; ++i_symbol) {
+  // Iterate all symbols that have not been processed yet.
+  for (unsigned i_symbol = nof_processed_symbols; i_symbol != MAX_NSYMB_PER_SLOT; ++i_symbol) {
     for (const auto& pdu : pdu_repository.get_pucch_pdus(i_symbol)) {
-      if (pdu_repository.on_create_pdu_task()) {
-        notify_discard_pucch(pdu);
-      }
+      notify_discard_pucch(pdu);
     }
 
     for (const auto& collection : pdu_repository.get_pucch_f1_repository(i_symbol)) {
-      if (pdu_repository.on_create_pdu_task()) {
-        notify_discard_pucch(collection);
-      }
+      notify_discard_pucch(collection);
     }
 
     for (const auto& pdu : pdu_repository.get_pusch_pdus(i_symbol)) {
-      if (pdu_repository.on_create_pdu_task()) {
-        notify_discard_pusch(pdu);
-      }
+      notify_discard_pusch(pdu);
     }
 
     for ([[maybe_unused]] const auto& pdu : pdu_repository.get_srs_pdus(i_symbol)) {
-      if (pdu_repository.on_create_pdu_task()) {
-        pdu_repository.on_finish_processing_pdu();
-      }
+      state_machine.on_finish_processing_pdu();
     }
   }
+
+  // Notify the end of discarding slot. The processor becomes idle.
+  state_machine.finish_discard_slot();
+}
+
+std::atomic<unsigned>& uplink_processor_impl::get_grid_ref_counter()
+{
+  static std::vector<std::unique_ptr<std::atomic<unsigned>>> ref_counters;
+  ref_counters.emplace_back(std::make_unique<std::atomic<unsigned>>(0));
+  return *ref_counters.back();
 }

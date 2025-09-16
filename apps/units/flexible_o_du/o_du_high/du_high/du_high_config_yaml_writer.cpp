@@ -79,33 +79,46 @@ static YAML::Node build_du_section(const du_high_unit_config& config)
   return node;
 }
 
-static void fill_du_high_expert_execution_section(YAML::Node node, const du_high_unit_expert_execution_config& config)
-{
-  auto cell_affinities_node = node["cell_affinities"];
-  while (config.cell_affinities.size() > cell_affinities_node.size()) {
-    cell_affinities_node.push_back(YAML::Node());
-  }
-
-  unsigned index = 0;
-  for (auto cell : cell_affinities_node) {
-    const auto& expert = config.cell_affinities[index];
-
-    if (expert.l2_cell_cpu_cfg.mask.any()) {
-      cell["l2_cell_cpus"] = fmt::format("{:,}", span<const size_t>(expert.l2_cell_cpu_cfg.mask.get_cpu_ids()));
-    }
-    cell["l2_cell_pinning"] = to_string(expert.l2_cell_cpu_cfg.pinning_policy);
-
-    ++index;
-  }
-}
-
 static YAML::Node build_du_high_ntn_section(const ntn_config& config)
 {
   YAML::Node node;
 
   node["cell_specific_koffset"] = config.cell_specific_koffset;
+
+  if (config.ntn_ul_sync_validity_dur) {
+    node["ntn_ul_sync_validity_dur"] = config.ntn_ul_sync_validity_dur.value();
+  }
+
   if (config.ta_info) {
-    node["ta_common"] = config.ta_info.value().ta_common;
+    YAML::Node ta_info_node;
+    ta_info_node["ta_common"]               = config.ta_info.value().ta_common;
+    ta_info_node["ta_common_drift"]         = config.ta_info.value().ta_common_drift;
+    ta_info_node["ta_common_drift_variant"] = config.ta_info.value().ta_common_drift_variant;
+    ta_info_node["ta_common_offset"]        = config.ta_info.value().ta_common_offset;
+
+    node["ta_info"] = ta_info_node;
+  }
+
+  if (config.epoch_timestamp) {
+    node["epoch_timestamp"] = config.epoch_timestamp.value();
+  }
+
+  if (config.feeder_link_info) {
+    YAML::Node fl_node;
+    fl_node["enable_doppler_compensation"] = config.feeder_link_info.value().enable_doppler_compensation;
+    fl_node["dl_freq"]                     = config.feeder_link_info.value().dl_freq;
+    fl_node["ul_freq"]                     = config.feeder_link_info.value().ul_freq;
+
+    node["feeder_link_info"] = fl_node;
+  }
+
+  if (config.ntn_gateway_location) {
+    YAML::Node gw_loc_node;
+    gw_loc_node["latitude"]  = config.ntn_gateway_location.value().latitude;
+    gw_loc_node["longitude"] = config.ntn_gateway_location.value().longitude;
+    gw_loc_node["altitude"]  = config.ntn_gateway_location.value().altitude;
+
+    node["ntn_gateway_location"] = gw_loc_node;
   }
 
   if (config.epoch_time.has_value()) {
@@ -114,6 +127,14 @@ static YAML::Node build_du_high_ntn_section(const ntn_config& config)
     epoch_node["subframe_number"] = config.epoch_time.value().subframe_number;
 
     node["epoch_time"] = epoch_node;
+  }
+
+  if (config.epoch_sfn_offset) {
+    node["epoch_sfn_offset"] = config.epoch_sfn_offset.value();
+  }
+
+  if (config.use_state_vector) {
+    node["use_state_vector"] = config.use_state_vector.value();
   }
 
   if (std::holds_alternative<ecef_coordinates_t>(config.ephemeris_info)) {
@@ -319,26 +340,32 @@ static YAML::Node build_du_high_pdsch_section(const du_high_unit_pdsch_config& c
 {
   YAML::Node node;
 
-  node["min_ue_mcs"]                 = config.min_ue_mcs;
-  node["max_ue_mcs"]                 = config.max_ue_mcs;
-  node["fixed_rar_mcs"]              = config.fixed_rar_mcs;
-  node["fixed_sib1_mcs"]             = config.fixed_sib1_mcs;
-  node["nof_harqs"]                  = config.nof_harqs;
-  node["max_nof_harq_retxs"]         = config.max_nof_harq_retxs;
-  node["max_consecutive_kos"]        = config.max_consecutive_kos;
-  node["mcs_table"]                  = to_string(config.mcs_table);
-  node["min_rb_size"]                = config.min_rb_size;
-  node["max_rb_size"]                = config.max_rb_size;
-  node["start_rb"]                   = config.start_rb;
-  node["end_rb"]                     = config.end_rb;
-  node["max_pdschs_per_slot"]        = config.max_pdschs_per_slot;
-  node["olla_cqi_inc_step"]          = config.olla_cqi_inc;
-  node["olla_target_bler"]           = config.olla_target_bler;
-  node["olla_max_cqi_offset"]        = config.olla_max_cqi_offset;
-  node["dc_offset"]                  = to_string(config.dc_offset);
-  node["harq_la_cqi_drop_threshold"] = static_cast<unsigned>(config.harq_la_cqi_drop_threshold);
-  node["harq_la_ri_drop_threshold"]  = static_cast<unsigned>(config.harq_la_ri_drop_threshold);
-  node["dmrs_additional_position"]   = config.dmrs_add_pos;
+  node["min_ue_mcs"]                       = config.min_ue_mcs;
+  node["max_ue_mcs"]                       = config.max_ue_mcs;
+  node["fixed_rar_mcs"]                    = config.fixed_rar_mcs;
+  node["fixed_sib1_mcs"]                   = config.fixed_sib1_mcs;
+  node["nof_harqs"]                        = config.nof_harqs;
+  node["max_nof_harq_retxs"]               = config.max_nof_harq_retxs;
+  node["max_consecutive_kos"]              = config.max_consecutive_kos;
+  node["mcs_table"]                        = to_string(config.mcs_table);
+  node["min_rb_size"]                      = config.min_rb_size;
+  node["max_rb_size"]                      = config.max_rb_size;
+  node["start_rb"]                         = config.start_rb;
+  node["end_rb"]                           = config.end_rb;
+  node["max_pdschs_per_slot"]              = config.max_pdschs_per_slot;
+  node["olla_cqi_inc_step"]                = config.olla_cqi_inc;
+  node["olla_target_bler"]                 = config.olla_target_bler;
+  node["olla_max_cqi_offset"]              = config.olla_max_cqi_offset;
+  node["dc_offset"]                        = to_string(config.dc_offset);
+  node["harq_la_cqi_drop_threshold"]       = static_cast<unsigned>(config.harq_la_cqi_drop_threshold);
+  node["harq_la_ri_drop_threshold"]        = static_cast<unsigned>(config.harq_la_ri_drop_threshold);
+  node["dmrs_additional_position"]         = config.dmrs_add_pos;
+  node["interleaving_bundle_size"]         = static_cast<unsigned>(config.interleaving_bundle_size);
+  node["enable_csi_rs_pdsch_multiplexing"] = config.enable_csi_rs_pdsch_multiplexing;
+
+  if (config.max_rank.has_value()) {
+    node["max_rank"] = *config.max_rank;
+  }
 
   for (auto rv : config.rv_sequence) {
     node["rv_sequence"].push_back(rv);
@@ -366,31 +393,37 @@ static YAML::Node build_du_high_pusch_section(const du_high_unit_pusch_config& c
 {
   YAML::Node node;
 
-  node["min_ue_mcs"]               = config.min_ue_mcs;
-  node["max_ue_mcs"]               = config.max_ue_mcs;
-  node["max_consecutive_kos"]      = config.max_consecutive_kos;
-  node["mcs_table"]                = to_string(config.mcs_table);
-  node["max_rank"]                 = config.max_rank;
-  node["msg3_delta_preamble"]      = config.msg3_delta_preamble;
-  node["p0_nominal_with_grant"]    = config.p0_nominal_with_grant;
-  node["max_puschs_per_slot"]      = config.max_puschs_per_slot;
-  node["beta_offset_ack_idx_1"]    = config.beta_offset_ack_idx_1;
-  node["beta_offset_ack_idx_2"]    = config.beta_offset_ack_idx_2;
-  node["beta_offset_ack_idx_3"]    = config.beta_offset_ack_idx_3;
-  node["beta_offset_csi_p1_idx_1"] = config.beta_offset_csi_p1_idx_1;
-  node["beta_offset_csi_p1_idx_2"] = config.beta_offset_csi_p1_idx_2;
-  node["beta_offset_csi_p2_idx_1"] = config.beta_offset_csi_p2_idx_1;
-  node["beta_offset_csi_p2_idx_2"] = config.beta_offset_csi_p2_idx_2;
-  node["min_k2"]                   = config.min_k2;
-  node["dc_offset"]                = to_string(config.dc_offset);
-  node["olla_snr_inc_step"]        = config.olla_snr_inc;
-  node["olla_target_bler"]         = config.olla_target_bler;
-  node["olla_max_snr_offset"]      = config.olla_max_snr_offset;
-  node["dmrs_additional_position"] = config.dmrs_add_pos;
-  node["min_rb_size"]              = config.min_rb_size;
-  node["max_rb_size"]              = config.max_rb_size;
-  node["start_rb"]                 = config.start_rb;
-  node["end_rb"]                   = config.end_rb;
+  node["min_ue_mcs"]                      = config.min_ue_mcs;
+  node["max_ue_mcs"]                      = config.max_ue_mcs;
+  node["max_consecutive_kos"]             = config.max_consecutive_kos;
+  node["mcs_table"]                       = to_string(config.mcs_table);
+  node["max_rank"]                        = config.max_rank;
+  node["msg3_delta_preamble"]             = config.msg3_delta_preamble;
+  node["p0_nominal_with_grant"]           = config.p0_nominal_with_grant;
+  node["max_puschs_per_slot"]             = config.max_puschs_per_slot;
+  node["beta_offset_ack_idx_1"]           = config.beta_offset_ack_idx_1;
+  node["beta_offset_ack_idx_2"]           = config.beta_offset_ack_idx_2;
+  node["beta_offset_ack_idx_3"]           = config.beta_offset_ack_idx_3;
+  node["beta_offset_csi_p1_idx_1"]        = config.beta_offset_csi_p1_idx_1;
+  node["beta_offset_csi_p1_idx_2"]        = config.beta_offset_csi_p1_idx_2;
+  node["beta_offset_csi_p2_idx_1"]        = config.beta_offset_csi_p2_idx_1;
+  node["beta_offset_csi_p2_idx_2"]        = config.beta_offset_csi_p2_idx_2;
+  node["min_k2"]                          = config.min_k2;
+  node["dc_offset"]                       = to_string(config.dc_offset);
+  node["olla_snr_inc_step"]               = config.olla_snr_inc;
+  node["olla_target_bler"]                = config.olla_target_bler;
+  node["olla_max_snr_offset"]             = config.olla_max_snr_offset;
+  node["dmrs_additional_position"]        = config.dmrs_add_pos;
+  node["min_rb_size"]                     = config.min_rb_size;
+  node["max_rb_size"]                     = config.max_rb_size;
+  node["start_rb"]                        = config.start_rb;
+  node["end_rb"]                          = config.end_rb;
+  node["enable_closed_loop_pw_control"]   = config.enable_closed_loop_pw_control;
+  node["enable_phr_bw_adaptation"]        = config.enable_phr_bw_adaptation;
+  node["target_pusch_sinr"]               = config.target_pusch_sinr;
+  node["path_loss_for_target_pusch_sinr"] = config.path_loss_for_target_pusch_sinr;
+  node["path_loss_compensation_factor"]   = config.path_loss_compensation_factor;
+  node["enable_transform_precoding"]      = config.enable_transform_precoding;
 
   for (auto rv : config.rv_sequence) {
     node["rv_sequence"].push_back(rv);
@@ -435,7 +468,7 @@ static YAML::Node build_du_high_pucch_section(const du_high_unit_pucch_config& c
   node["use_format_0"]                    = config.use_format_0;
   node["pucch_set1_format"]               = static_cast<unsigned>(config.set1_format);
   node["sr_period_ms"]                    = config.sr_period_msec;
-  node["nof_ue_pucch_res_harq_per_set"]   = config.nof_ue_pucch_res_harq_per_set;
+  node["nof_ue_res_harq_per_set"]         = config.nof_ue_pucch_res_harq_per_set;
   node["f0_or_f1_nof_cell_res_sr"]        = config.nof_cell_sr_resources;
   node["f0_intraslot_freq_hop"]           = config.f0_intraslot_freq_hopping;
   node["f1_enable_occ"]                   = config.f1_enable_occ;
@@ -612,6 +645,19 @@ static YAML::Node build_du_high_srs_section(const du_high_unit_srs_config& confi
   return node;
 }
 
+static YAML::Node build_du_high_drx_section(const du_high_unit_drx_config& config)
+{
+  YAML::Node node;
+
+  node["on_duration_timer"] = config.on_duration_timer;
+  node["inactivity_timer"]  = config.inactivity_timer;
+  node["retx_timer_dl"]     = config.retx_timer_dl;
+  node["retx_timer_ul"]     = config.retx_timer_ul;
+  node["long_cycle"]        = config.long_cycle;
+
+  return node;
+}
+
 static YAML::Node build_cell_entry(const du_high_unit_base_cell_config& config)
 {
   YAML::Node node;
@@ -623,6 +669,7 @@ static YAML::Node build_cell_entry(const du_high_unit_base_cell_config& config)
   node["nof_antennas_ul"]       = config.nof_antennas_ul;
   node["nof_antennas_dl"]       = config.nof_antennas_dl;
   node["plmn"]                  = config.plmn;
+  node["additional_plmns"]      = config.additional_plmns;
   node["tac"]                   = config.tac;
   node["q_rx_lev_min"]          = config.q_rx_lev_min;
   node["q_qual_min"]            = config.q_qual_min;
@@ -648,7 +695,14 @@ static YAML::Node build_cell_entry(const du_high_unit_base_cell_config& config)
   node["paging"] = build_du_high_paging_section(config.paging_cfg);
   node["csi"]    = build_du_high_csi_section(config.csi_cfg);
   node["srs"]    = build_du_high_srs_section(config.srs_cfg);
+  if (config.drx_cfg.long_cycle != 0) {
+    node["drx"] = build_du_high_drx_section(config.drx_cfg);
+  }
   fill_du_high_sched_expert_section(node, config.sched_expert_cfg);
+
+  if (config.ntn_cfg) {
+    node["ntn"] = build_du_high_ntn_section(config.ntn_cfg.value());
+  }
 
   return node;
 }
@@ -791,14 +845,10 @@ void srsran::fill_du_high_config_in_yaml_schema(YAML::Node& node, const du_high_
   fill_du_high_metrics_section(node["metrics"], config.metrics);
   fill_du_high_pcap_section(node["pcap"], config.pcaps);
   node["du"] = build_du_section(config);
-  if (config.ntn_cfg) {
-    node["ntn"] = build_du_high_ntn_section(config.ntn_cfg.value());
-  }
   if (config.test_mode_cfg.test_ue.rnti != rnti_t::INVALID_RNTI) {
     node["test_mode"] = build_du_high_testmode_section(config.test_mode_cfg);
   }
 
-  fill_du_high_expert_execution_section(node["expert_execution"], config.expert_execution_cfg);
   fill_qos_section(node, config.qos_cfg);
   build_du_high_cells_section(node, config.cells_cfg);
   build_du_high_sbr_section(node, config.srb_cfg);

@@ -26,7 +26,10 @@
 #include "../support/pdsch/pdsch_resource_allocation.h"
 #include "../support/pusch/pusch_default_time_allocation.h"
 #include "../support/pusch/pusch_resource_allocation.h"
+#include "sched_config_manager.h"
 #include "sched_config_params.h"
+#include "srsran/ran/pdcch/dci_format.h"
+#include "srsran/ran/resource_allocation/vrb_to_prb.h"
 #include "srsran/support/math/math_utils.h"
 #include <algorithm>
 
@@ -108,6 +111,22 @@ void search_space_info::update_pdsch_time_domain_list(const ue_cell_configuratio
   }
 }
 
+void search_space_info::update_pdsch_mappings(vrb_to_prb::mapping_type interleaving_bundle_size)
+{
+  const dci_dl_format               dci_fmt       = get_dl_dci_format();
+  const bwp_downlink_common&        active_dl_bwp = *bwp->dl_common.value();
+  const search_space_configuration& ss_cfg        = *cfg;
+
+  if (dci_fmt == dci_dl_format::f1_0 and ss_cfg.is_common_search_space()) {
+    // [Implementation defined] We don't support interleaving in common search spaces.
+    interleaved_mapping.reset();
+  } else if (interleaving_bundle_size != vrb_to_prb::mapping_type::non_interleaved) {
+    interleaved_mapping.emplace(vrb_to_prb::create_interleaved_other(active_dl_bwp.generic_params.crbs.start(),
+                                                                     active_dl_bwp.generic_params.crbs.length(),
+                                                                     interleaving_bundle_size));
+  }
+}
+
 /// \brief Determines whether the given DCI format is monitored in UE specific SS or not.
 /// \param[in] ue_cell_cfg UE cell configuration.
 /// \param[in] active_bwp_id Active BWP Id.
@@ -151,7 +170,7 @@ static dci_size_config get_dci_size_config(const ue_cell_configuration& ue_cell_
   const auto&                              opt_pdsch_cfg              = active_bwp.dl_ded.value()->pdsch_cfg;
   const auto*                              opt_pdsch_serving_cell_cfg = ue_cell_cfg.pdsch_serving_cell_cfg();
 
-  dci_size_config dci_sz_cfg = dci_size_config{
+  auto dci_sz_cfg = dci_size_config{
       is_dci_format_monitored_in_ue_ss(ue_cell_cfg, active_bwp.bwp_id, true),
       is_dci_format_monitored_in_ue_ss(ue_cell_cfg, active_bwp.bwp_id, false),
       init_dl_bwp.generic_params.crbs.length(),
@@ -301,21 +320,21 @@ static dci_size_config get_dci_size_config(const ue_cell_configuration& ue_cell_
         break;
       }
       case pdsch_config::resource_allocation::resource_allocation_type_1: {
-        dci_sz_cfg.pdsch_res_allocation_type   = resource_allocation::resource_allocation_type_1;
-        dci_sz_cfg.interleaved_vrb_prb_mapping = false;
-        if (opt_pdsch_cfg.value().vrb_to_prb_itlvr.has_value()) {
-          dci_sz_cfg.interleaved_vrb_prb_mapping = opt_pdsch_cfg.value().vrb_to_prb_itlvr.has_value();
-        }
+        dci_sz_cfg.pdsch_res_allocation_type = resource_allocation::resource_allocation_type_1;
+        // NOTE: dci_sz_cfg.interleaved_vrb_prb_mapping is expected to be set (true or false depends on
+        // opt_pdsch_cfg.value()) in case of \ref  resource_allocation_type_1.
+        dci_sz_cfg.interleaved_vrb_prb_mapping =
+            opt_pdsch_cfg.value().vrb_to_prb_interleaving != vrb_to_prb::mapping_type::non_interleaved;
         break;
       }
       case pdsch_config::resource_allocation::dynamic_switch: {
         dci_sz_cfg.pdsch_res_allocation_type = resource_allocation::dynamic_switch;
         dci_sz_cfg.nof_dl_rb_groups          = static_cast<unsigned>(
             get_nominal_rbg_size(active_dl_bwp.crbs.length(), opt_pdsch_cfg.value().rbg_sz == rbg_size::config1));
-        dci_sz_cfg.interleaved_vrb_prb_mapping = false;
-        if (opt_pdsch_cfg.value().vrb_to_prb_itlvr.has_value()) {
-          dci_sz_cfg.interleaved_vrb_prb_mapping = opt_pdsch_cfg.value().vrb_to_prb_itlvr.has_value();
-        }
+        // NOTE: dci_sz_cfg.interleaved_vrb_prb_mapping is expected to be set (true or false depends on
+        // opt_pdsch_cfg.value()) in case of \ref dynamic_switch.
+        dci_sz_cfg.interleaved_vrb_prb_mapping =
+            opt_pdsch_cfg.value().vrb_to_prb_interleaving != vrb_to_prb::mapping_type::non_interleaved;
         break;
       }
     }
@@ -709,6 +728,7 @@ void ue_cell_configuration::configure_bwp_common_cfg(bwp_id_t bwpid, const bwp_d
                                                      *ss.bwp->dl_common.value(),
                                                      *ss.cfg,
                                                      *ss.coreset);
+    ss.update_pdsch_mappings(cell_cfg_common.expert_cfg.ue.pdsch_interleaving_bundle_size);
   }
 }
 
@@ -750,6 +770,7 @@ void ue_cell_configuration::configure_bwp_ded_cfg(bwp_id_t bwpid, const bwp_down
                                                      *ss.bwp->dl_common.value(),
                                                      *ss.cfg,
                                                      *ss.coreset);
+    ss.update_pdsch_mappings(cell_cfg_common.expert_cfg.ue.pdsch_interleaving_bundle_size);
   }
 }
 
@@ -821,7 +842,7 @@ void ue_configuration::update(const cell_common_configuration_list& common_cells
     lc_list = params.lc_ch_list.value();
   }
 
-  // Update DRX config
+  // Update DRX config.
   ue_drx_cfg = cfg_req.drx_cfg;
 
   // Update UE dedicated cell configs.

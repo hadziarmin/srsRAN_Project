@@ -21,6 +21,7 @@
  */
 
 #include "asn1_sys_info_packer.h"
+#include "asn1_ntn_config_helpers.h"
 #include "asn1_rrc_config_helpers.h"
 #include "srsran/asn1/rrc_nr/bcch_bch_msg.h"
 #include "srsran/asn1/rrc_nr/bcch_dl_sch_msg.h"
@@ -262,20 +263,25 @@ static asn1::rrc_nr::serving_cell_cfg_common_sib_s make_asn1_rrc_cell_serving_ce
   asn1::number_to_enum(cell.ssb_periodicity_serving_cell, ssb_periodicity_to_value(du_cfg.ssb_cfg.ssb_period));
   cell.ss_pbch_block_pwr = du_cfg.ssb_cfg.ssb_block_power;
 
-  n_ta_offset ta_offset                = band_helper::get_ta_offset(du_cfg.dl_carrier.band);
-  cell.n_timing_advance_offset_present = true;
+  n_ta_offset ta_offset = band_helper::get_ta_offset(du_cfg.dl_carrier.band);
   switch (ta_offset) {
     case n_ta_offset::n0:
+      cell.n_timing_advance_offset_present = true;
       cell.n_timing_advance_offset.value =
           asn1::rrc_nr::serving_cell_cfg_common_sib_s::n_timing_advance_offset_opts::n0;
       break;
     case n_ta_offset::n25600:
+      cell.n_timing_advance_offset_present = true;
       cell.n_timing_advance_offset.value =
           asn1::rrc_nr::serving_cell_cfg_common_sib_s::n_timing_advance_offset_opts::n25600;
       break;
     case n_ta_offset::n39936:
+      cell.n_timing_advance_offset_present = true;
       cell.n_timing_advance_offset.value =
           asn1::rrc_nr::serving_cell_cfg_common_sib_s::n_timing_advance_offset_opts::n39936;
+      break;
+    case n_ta_offset::n13792:
+      // The parameter is ignored.
       break;
     default:
       report_fatal_error("Invalid timing advance offset");
@@ -291,6 +297,35 @@ static asn1::rrc_nr::serving_cell_cfg_common_sib_s make_asn1_rrc_cell_serving_ce
   return cell;
 }
 
+static asn1::rrc_nr::plmn_id_s make_asn1_plmn_id(const plmn_identity& plmn)
+{
+  using namespace asn1::rrc_nr;
+
+  plmn_id_s asn1_plmn;
+  asn1_plmn.mcc_present         = true;
+  asn1_plmn.mcc                 = plmn.mcc().to_bytes();
+  static_vector<uint8_t, 3> mnc = plmn.mnc().to_bytes();
+  asn1_plmn.mnc.resize(mnc.size());
+  for (unsigned i = 0, sz = mnc.size(); i != sz; ++i) {
+    asn1_plmn.mnc[i] = mnc[i];
+  }
+  return asn1_plmn;
+}
+
+static asn1::rrc_nr::plmn_id_info_s
+make_asn1_plmn_id_info(const plmn_identity& plmn, const tac_t& tac, const nr_cell_identity& nci)
+{
+  using namespace asn1::rrc_nr;
+
+  plmn_id_info_s asn1_plmn_info;
+  asn1_plmn_info.plmn_id_list.push_back(make_asn1_plmn_id(plmn));
+  asn1_plmn_info.tac_present = true;
+  asn1_plmn_info.tac.from_number(tac);
+  asn1_plmn_info.cell_id.from_number(nci.value());
+  asn1_plmn_info.cell_reserved_for_oper.value = plmn_id_info_s::cell_reserved_for_oper_opts::not_reserved;
+  return asn1_plmn_info;
+}
+
 static asn1::rrc_nr::sib1_s make_asn1_rrc_cell_sib1(const du_cell_config& du_cfg)
 {
   using namespace asn1::rrc_nr;
@@ -302,21 +337,11 @@ static asn1::rrc_nr::sib1_s make_asn1_rrc_cell_sib1(const du_cell_config& du_cfg
   sib1.cell_sel_info.q_qual_min_present = true;
   sib1.cell_sel_info.q_qual_min         = du_cfg.cell_sel_info.q_qual_min.value();
 
-  sib1.cell_access_related_info.plmn_id_info_list.resize(1);
-  sib1.cell_access_related_info.plmn_id_info_list[0].plmn_id_list.resize(1);
-  plmn_id_s& plmn               = sib1.cell_access_related_info.plmn_id_info_list[0].plmn_id_list[0];
-  plmn.mcc_present              = true;
-  plmn.mcc                      = du_cfg.nr_cgi.plmn_id.mcc().to_bytes();
-  static_vector<uint8_t, 3> mnc = du_cfg.nr_cgi.plmn_id.mnc().to_bytes();
-  plmn.mnc.resize(mnc.size());
-  for (unsigned i = 0, sz = mnc.size(); i != sz; ++i) {
-    plmn.mnc[i] = mnc[i];
+  auto& asn1_plmn_id_info_list = sib1.cell_access_related_info.plmn_id_info_list;
+  asn1_plmn_id_info_list.push_back(make_asn1_plmn_id_info(du_cfg.nr_cgi.plmn_id, du_cfg.tac, du_cfg.nr_cgi.nci));
+  for (auto& add_plmn : du_cfg.cell_acc_rel_info.additional_plmns) {
+    asn1_plmn_id_info_list[0].plmn_id_list.push_back(make_asn1_plmn_id(add_plmn));
   }
-  sib1.cell_access_related_info.plmn_id_info_list[0].tac_present = true;
-  sib1.cell_access_related_info.plmn_id_info_list[0].tac.from_number(du_cfg.tac);
-  sib1.cell_access_related_info.plmn_id_info_list[0].cell_id.from_number(du_cfg.nr_cgi.nci.value());
-  sib1.cell_access_related_info.plmn_id_info_list[0].cell_reserved_for_oper.value =
-      plmn_id_info_s::cell_reserved_for_oper_opts::not_reserved;
 
   sib1.conn_est_fail_ctrl_present                   = true;
   sib1.conn_est_fail_ctrl.conn_est_fail_count.value = asn1::rrc_nr::conn_est_fail_ctrl_s::conn_est_fail_count_opts::n1;
@@ -326,63 +351,89 @@ static asn1::rrc_nr::sib1_s make_asn1_rrc_cell_sib1(const du_cell_config& du_cfg
   sib1.conn_est_fail_ctrl.conn_est_fail_offset         = 1;
 
   if (du_cfg.si_config.has_value()) {
-    for (const auto& sib : du_cfg.si_config->sibs) {
-      if (std::holds_alternative<sib2_info>(sib) || std::holds_alternative<sib6_info>(sib) ||
-          std::holds_alternative<sib7_info>(sib) || std::holds_alternative<sib8_info>(sib)) {
-        sib1.si_sched_info_present = true;
-        bool ret = asn1::number_to_enum(sib1.si_sched_info.si_win_len, du_cfg.si_config.value().si_window_len_slots);
-        srsran_assert(ret, "Invalid SI window length");
-        for (const auto& cfg_si : du_cfg.si_config->si_sched_info) {
-          sched_info_s asn1_si;
-          asn1_si.si_broadcast_status.value = sched_info_s::si_broadcast_status_opts::broadcasting;
-          ret = asn1::number_to_enum(asn1_si.si_periodicity, cfg_si.si_period_radio_frames);
-          srsran_assert(ret, "Invalid SI period");
-          for (auto mapping_info : cfg_si.sib_mapping_info) {
-            sib_type_info_s type_info;
-            auto            sib_id      = static_cast<uint8_t>(mapping_info);
-            ret                         = asn1::number_to_enum(type_info.type, sib_id);
-            type_info.value_tag_present = true;
-            type_info.value_tag         = 0;
-            if (ret) {
-              asn1_si.sib_map_info.push_back(type_info);
+    // Populate the SI Scheduling info list.
+    if (!du_cfg.si_config->si_sched_info.empty()) {
+      bool ret = asn1::number_to_enum(sib1.si_sched_info.si_win_len, du_cfg.si_config.value().si_window_len_slots);
+      srsran_assert(ret, "Invalid SI window length");
+
+      // For each SI message in the configuration...
+      for (const auto& cfg_si : du_cfg.si_config->si_sched_info) {
+        // Prepare a SchedulingInfo element. This holds information for an SI message carrying SIBs 2, 6, 7 or 8.
+        sched_info_s asn1_si;
+        asn1_si.si_broadcast_status.value = sched_info_s::si_broadcast_status_opts::broadcasting;
+        ret                               = asn1::number_to_enum(asn1_si.si_periodicity, cfg_si.si_period_radio_frames);
+        srsran_assert(ret, "Invalid SI period");
+
+        // Prepare a SchedulingInfo2-r17 element. This is used for SIB-19.
+        sched_info2_r17_s asn1_si_r17;
+        asn1_si_r17.si_broadcast_status_r17.value = sched_info2_r17_s::si_broadcast_status_r17_opts::broadcasting;
+        ret = asn1::number_to_enum(asn1_si_r17.si_periodicity_r17, cfg_si.si_period_radio_frames);
+        srsran_assert(ret, "Invalid SI period");
+        if (cfg_si.si_window_position.has_value()) {
+          asn1_si_r17.si_win_position_r17 = cfg_si.si_window_position.value();
+        }
+
+        for (auto mapping_info : cfg_si.sib_mapping_info) {
+          // For each entry in the mapping info, find the matching SIB.
+          auto sib_id = static_cast<unsigned>(mapping_info);
+          for (const auto& sib : du_cfg.si_config->sibs) {
+            sib_type type = get_sib_info_type(sib);
+            if (static_cast<std::underlying_type_t<sib_type>>(type) == sib_id) {
+              switch (type) {
+                case sib_type::sib2:
+                case sib_type::sib6:
+                case sib_type::sib7:
+                case sib_type::sib8: {
+                  // If the mapping info entry is for a regular SIB, append the SIB type to the schedulingInfo element.
+                  sib_type_info_s type_info;
+                  ret                         = asn1::number_to_enum(type_info.type, sib_id);
+                  type_info.value_tag_present = true;
+                  type_info.value_tag         = 0;
+                  if (ret) {
+                    asn1_si.sib_map_info.push_back(type_info);
+                  }
+                } break;
+                case sib_type::sib19: {
+                  // If the mapping info entry is for a release 17 SIB, append to the schedulingInfo2 element.
+                  sib_type_info_v1700_s type_info2;
+                  auto                  sib_id_r17 = static_cast<uint8_t>(mapping_info);
+                  type_info2.sib_type_r17.set_type1_r17();
+                  ret = asn1::number_to_enum(type_info2.sib_type_r17.type1_r17(), sib_id_r17);
+                  if (ret) {
+                    asn1_si_r17.sib_map_info_r17.push_back(type_info2);
+                  }
+                } break;
+                case sib_type::sib1:
+                case sib_type::sib_invalid:
+                default:
+                  srsran_assertion_failure("Invalid SIB type (i.e., {}) for an SI message", fmt::underlying(type));
+              }
+              break;
             }
           }
-          if (asn1_si.sib_map_info.size() > 0) {
-            sib1.si_sched_info.sched_info_list.push_back(asn1_si);
-          }
         }
-      } else if (std::holds_alternative<sib19_info>(sib)) {
-        sib1.non_crit_ext_present                                               = true;
-        sib1.non_crit_ext.non_crit_ext_present                                  = true;
-        sib1.non_crit_ext.non_crit_ext.non_crit_ext_present                     = true;
-        sib1.non_crit_ext.non_crit_ext.non_crit_ext.si_sched_info_v1700_present = true;
-        sib1.non_crit_ext.non_crit_ext.non_crit_ext.cell_barred_ntn_r17_present = true;
-        sib1.non_crit_ext.non_crit_ext.non_crit_ext.cell_barred_ntn_r17 =
-            sib1_v1700_ies_s::cell_barred_ntn_r17_opts::not_barred;
-        auto& si_sched_info_r17 = sib1.non_crit_ext.non_crit_ext.non_crit_ext.si_sched_info_v1700;
-        for (const auto& cfg_si : du_cfg.si_config->si_sched_info) {
-          sched_info2_r17_s asn1_si_r17;
-          asn1_si_r17.si_broadcast_status_r17.value = sched_info2_r17_s::si_broadcast_status_r17_opts::broadcasting;
-          bool ret = asn1::number_to_enum(asn1_si_r17.si_periodicity_r17, cfg_si.si_period_radio_frames);
-          srsran_assert(ret, "Invalid SI period");
-          if (cfg_si.si_window_position.has_value()) {
-            asn1_si_r17.si_win_position_r17 = cfg_si.si_window_position.value();
-          }
-          for (auto mapping_info : cfg_si.sib_mapping_info) {
-            sib_type_info_v1700_s type_info;
-            auto                  sib_id_r17 = static_cast<uint8_t>(mapping_info);
-            type_info.sib_type_r17.set_type1_r17();
-            ret = asn1::number_to_enum(type_info.sib_type_r17.type1_r17(), sib_id_r17);
-            if (ret) {
-              asn1_si_r17.sib_map_info_r17.push_back(type_info);
-            }
-          }
-          if (asn1_si_r17.sib_map_info_r17.size() > 0) {
-            si_sched_info_r17.sched_info_list2_r17.push_back(asn1_si_r17);
-          }
+
+        srsran_assert((asn1_si.sib_map_info.size() == 0) || (asn1_si_r17.sib_map_info_r17.size() == 0),
+                      "An SI message containing release 17 SIBs cannot hold other SIB types");
+
+        // Append the SchedulingInfo element to the SchedulingInfo list.
+        if (asn1_si.sib_map_info.size() > 0) {
+          sib1.si_sched_info_present = true;
+          sib1.si_sched_info.sched_info_list.push_back(asn1_si);
         }
-      } else {
-        srsran_terminate("Invalid SIB type");
+
+        // Append the SchedulingInfo2-r17 element to the SchedulingInfo2-r17 list.
+        if (asn1_si_r17.sib_map_info_r17.size() > 0) {
+          sib1.non_crit_ext_present                                               = true;
+          sib1.non_crit_ext.non_crit_ext_present                                  = true;
+          sib1.non_crit_ext.non_crit_ext.non_crit_ext_present                     = true;
+          sib1.non_crit_ext.non_crit_ext.non_crit_ext.si_sched_info_v1700_present = true;
+          sib1.non_crit_ext.non_crit_ext.non_crit_ext.cell_barred_ntn_r17_present = true;
+          sib1.non_crit_ext.non_crit_ext.non_crit_ext.cell_barred_ntn_r17 =
+              sib1_v1700_ies_s::cell_barred_ntn_r17_opts::not_barred;
+          auto& si_sched_info_r17 = sib1.non_crit_ext.non_crit_ext.non_crit_ext.si_sched_info_v1700;
+          si_sched_info_r17.sched_info_list2_r17.push_back(asn1_si_r17);
+        }
       }
     }
   }
@@ -629,131 +680,6 @@ static std::vector<asn1::rrc_nr::sib8_s> make_asn1_rrc_cell_sib8(const sib8_info
   }
 
   return sib_segments;
-}
-
-static asn1::rrc_nr::sib19_r17_s make_asn1_rrc_cell_sib19(const sib19_info& sib19_params)
-{
-  using namespace asn1::rrc_nr;
-  sib19_r17_s sib19;
-
-  if (sib19_params.distance_thres.has_value()) {
-    sib19.distance_thresh_r17_present = true;
-    sib19.distance_thresh_r17         = sib19_params.distance_thres.value();
-  }
-  if (sib19_params.ref_location.has_value()) {
-    sib19.ref_location_r17.from_string(sib19_params.ref_location.value());
-  }
-
-  sib19.t_service_r17_present = false;
-  sib19.ntn_cfg_r17_present   = true;
-
-  if (sib19_params.cell_specific_koffset.has_value()) {
-    sib19.ntn_cfg_r17.cell_specific_koffset_r17_present = true;
-    sib19.ntn_cfg_r17.cell_specific_koffset_r17         = sib19_params.cell_specific_koffset.value();
-  }
-
-  if (sib19_params.ephemeris_info.has_value()) {
-    if (const auto* pos_vel = std::get_if<ecef_coordinates_t>(&sib19_params.ephemeris_info.value())) {
-      sib19.ntn_cfg_r17.ephemeris_info_r17_present = true;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.set_position_velocity_r17();
-      sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().position_x_r17  = pos_vel->position_x;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().position_y_r17  = pos_vel->position_y;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().position_z_r17  = pos_vel->position_z;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().velocity_vx_r17 = pos_vel->velocity_vx;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().velocity_vy_r17 = pos_vel->velocity_vy;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().velocity_vz_r17 = pos_vel->velocity_vz;
-    } else {
-      const auto& orbital_elem = std::get<orbital_coordinates_t>(sib19_params.ephemeris_info.value());
-      sib19.ntn_cfg_r17.ephemeris_info_r17_present = true;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.set_orbital_r17();
-      sib19.ntn_cfg_r17.ephemeris_info_r17.orbital_r17().semi_major_axis_r17 = (uint64_t)orbital_elem.semi_major_axis;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.orbital_r17().eccentricity_r17    = (uint32_t)orbital_elem.eccentricity;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.orbital_r17().periapsis_r17       = (uint32_t)orbital_elem.periapsis;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.orbital_r17().longitude_r17       = (uint32_t)orbital_elem.longitude;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.orbital_r17().inclination_r17     = (int32_t)orbital_elem.inclination;
-      sib19.ntn_cfg_r17.ephemeris_info_r17.orbital_r17().mean_anomaly_r17    = (uint32_t)orbital_elem.mean_anomaly;
-    }
-  }
-  if (sib19_params.epoch_time.has_value()) {
-    sib19.ntn_cfg_r17.epoch_time_r17_present          = true;
-    sib19.ntn_cfg_r17.epoch_time_r17.sfn_r17          = sib19_params.epoch_time.value().sfn;
-    sib19.ntn_cfg_r17.epoch_time_r17.sub_frame_nr_r17 = sib19_params.epoch_time.value().subframe_number;
-  }
-  if (sib19_params.k_mac.has_value()) {
-    sib19.ntn_cfg_r17.kmac_r17_present = true;
-    sib19.ntn_cfg_r17.kmac_r17         = sib19_params.k_mac.value();
-  }
-
-  sib19.ntn_cfg_r17.ntn_polarization_dl_r17_present = false;
-  sib19.ntn_cfg_r17.ntn_polarization_ul_r17_present = false;
-
-  if (sib19_params.ta_info.has_value()) {
-    sib19.ntn_cfg_r17.ta_info_r17_present                             = true;
-    sib19.ntn_cfg_r17.ta_info_r17.ta_common_drift_r17_present         = true;
-    sib19.ntn_cfg_r17.ta_info_r17.ta_common_drift_variant_r17_present = true;
-    sib19.ntn_cfg_r17.ta_info_r17.ta_common_r17       = (uint32_t)sib19_params.ta_info.value().ta_common;
-    sib19.ntn_cfg_r17.ta_info_r17.ta_common_drift_r17 = (int32_t)sib19_params.ta_info.value().ta_common_drift;
-    sib19.ntn_cfg_r17.ta_info_r17.ta_common_drift_variant_r17 =
-        (uint16_t)sib19_params.ta_info.value().ta_common_drift_variant;
-  }
-
-  if (sib19_params.ntn_ul_sync_validity_dur.has_value()) {
-    sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17_present = true;
-    switch (sib19_params.ntn_ul_sync_validity_dur.value()) {
-      case 5:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s5;
-        break;
-      case 10:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s10;
-        break;
-      case 15:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s15;
-        break;
-      case 20:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s20;
-        break;
-      case 25:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s25;
-        break;
-      case 30:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s30;
-        break;
-      case 35:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s35;
-        break;
-      case 40:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s40;
-        break;
-      case 45:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s45;
-        break;
-      case 50:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s50;
-        break;
-      case 55:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s55;
-        break;
-      case 60:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s60;
-        break;
-      case 120:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s120;
-        break;
-      case 180:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s180;
-        break;
-      case 240:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s240;
-        break;
-      case 900:
-        sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17.value = ntn_cfg_r17_s::ntn_ul_sync_validity_dur_r17_opts::s900;
-        break;
-      default:
-        report_fatal_error("Invalid ntn_ul_sync_validity_dur {}.", sib19_params.ntn_ul_sync_validity_dur.value());
-    }
-  }
-
-  return sib19;
 }
 
 byte_buffer asn1_packer::pack_sib19(const sib19_info& sib19_params, std::string* js_str)

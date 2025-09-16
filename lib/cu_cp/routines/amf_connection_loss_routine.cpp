@@ -21,56 +21,50 @@
  */
 
 #include "amf_connection_loss_routine.h"
-#include "srsran/cu_cp/cu_cp_types.h"
-#include "srsran/ngap/ngap_setup.h"
-#include "srsran/support/async/async_timer.h"
+#include "cell_deactivation_routine.h"
 #include "srsran/support/async/coroutine.h"
 
 using namespace srsran;
 using namespace srs_cu_cp;
 
-async_task<bool> srsran::srs_cu_cp::start_amf_reconnection(ngap_interface&           ngap,
-                                                           timer_factory             timers,
-                                                           std::chrono::milliseconds reconnection_retry_time)
+amf_connection_loss_routine::amf_connection_loss_routine(const amf_index_t                 amf_index_,
+                                                         const cu_cp_configuration&        cu_cp_cfg_,
+                                                         std::vector<plmn_identity>&       plmns_,
+                                                         du_processor_repository&          du_db_,
+                                                         cu_cp_ue_context_release_handler& ue_release_handler_,
+                                                         ue_manager&                       ue_mng_,
+                                                         cu_cp_controller&                 controller_,
+                                                         srslog::basic_logger&             logger_) :
+  amf_index(amf_index_),
+  cu_cp_cfg(cu_cp_cfg_),
+  plmns(plmns_),
+  du_db(du_db_),
+  ue_release_handler(ue_release_handler_),
+  ue_mng(ue_mng_),
+  controller(controller_),
+  logger(logger_)
 {
-  return launch_async<amf_connection_loss_routine>(ngap, timers, reconnection_retry_time);
 }
 
-amf_connection_loss_routine::amf_connection_loss_routine(ngap_interface&           ngap_,
-                                                         timer_factory             timers,
-                                                         std::chrono::milliseconds reconnection_retry_time_) :
-  ngap(ngap_),
-  logger(srslog::fetch_basic_logger("CU-CP")),
-  amf_tnl_connection_retry_timer(timers.create_timer()),
-  reconnection_retry_time(reconnection_retry_time_)
-{
-}
-
-void amf_connection_loss_routine::operator()(coro_context<async_task<bool>>& ctx)
+void amf_connection_loss_routine::operator()(coro_context<async_task<void>>& ctx)
 {
   CORO_BEGIN(ctx);
 
-  while (not ngap.handle_amf_tnl_connection_request()) {
-    logger.info("TNL connection establishment to AMF failed. Retrying in {}...", reconnection_retry_time);
-    CORO_AWAIT(async_wait_for(amf_tnl_connection_retry_timer, reconnection_retry_time));
-  }
+  logger.info("\"{}\" started...", name());
 
-  // Initiate NG Setup.
-  CORO_AWAIT_VALUE(result_msg, ngap.handle_ng_setup_request(/*max_setup_retries*/ 1));
+  // Notify AMF connection manager about the disconnection.
+  controller.amf_connection_handler().handle_amf_connection_loss(amf_index);
 
-  success = std::holds_alternative<ngap_ng_setup_response>(result_msg);
+  // Stop accepting new UEs for the given PLMNs.
+  ue_mng.add_blocked_plmns(plmns);
 
-  if (success) {
-    std::string plmn_list;
-    for (const auto& plmn : ngap.get_ngap_context().get_supported_plmns()) {
-      plmn_list += plmn.to_string() + " ";
-    }
+  // Deactivate the cells served by the disconnected AMF.
+  CORO_AWAIT(launch_async<cell_deactivation_routine>(cu_cp_cfg, plmns, du_db, ue_release_handler, ue_mng, logger));
 
-    logger.info("Reconnected to AMF. Supported PLMNs: {}", plmn_list);
-  } else {
-    logger.error("Failed to reconnect to AMF");
-    CORO_EARLY_RETURN(false);
-  }
+  // Try to reconnect to AMF.
+  controller.amf_connection_handler().reconnect_to_amf(amf_index, &ue_mng, cu_cp_cfg.ngap.amf_reconnection_retry_time);
 
-  CORO_RETURN(success);
+  logger.info("\"{}\" finished successfully", name());
+
+  CORO_RETURN();
 }

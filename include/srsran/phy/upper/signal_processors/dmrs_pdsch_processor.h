@@ -34,24 +34,24 @@ class resource_grid_writer;
 class dmrs_pdsch_processor
 {
 public:
-  /// Describes the required parameters to generate the signal as described in 3GPP TS 38.211 section 7.4.1.1.
+  /// Describes the required parameters to generate the signal as described in 3GPP TS38.211 Section 7.4.1.1.
   struct config_t {
     /// Slot context for sequence initialization.
     slot_point slot;
-    /// Reference point for PDSCH DMRS \e k in RBs.
+    /// Reference point for PDSCH DM-RS \e k in RBs.
     unsigned reference_point_k_rb;
     /// DM-RS config type (\e dmrsConfigType).
     dmrs_type type;
     /// PDSCH DMRS-Scrambling-ID (\e pdschDmrsScramblingId).
     unsigned scrambling_id;
-    /// DMRS sequence initialization (\f$n_{SCID}\f$).
+    /// DM-RS sequence initialization (\f$n_{SCID}\f$).
     bool n_scid;
-    /// Indicates the generated signal linear amplitude.
+    /// Generated signal linear amplitude.
     float amplitude;
     /// DM-RS position mask. Indicates the OFDM symbols carrying DM-RS within the slot.
     symbol_slot_mask symbols_mask;
     /// Allocation RB list, the entries set to true are used for transmission.
-    prb_bitmap rb_mask;
+    crb_bitmap rb_mask;
     /// Precoding configuration.
     precoding_configuration precoding;
   };

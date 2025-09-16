@@ -23,8 +23,10 @@
 #include "du_manager_impl.h"
 #include "du_positioning_handler_factory.h"
 #include "procedures/cu_configuration_procedure.h"
+#include "procedures/du_mac_si_pdu_update_procedure.h"
 #include "procedures/du_param_config_procedure.h"
 #include "procedures/du_stop_procedure.h"
+#include "procedures/du_ue_reset_procedure.h"
 #include "procedures/du_ue_ric_configuration_procedure.h"
 #include "procedures/initial_du_setup_procedure.h"
 #include "srsran/support/executors/execute_until_success.h"
@@ -172,7 +174,7 @@ du_ue_index_t du_manager_impl::find_unused_du_ue_index()
 
 async_task<void> du_manager_impl::handle_f1_reset_request(const std::vector<du_ue_index_t>& ues_to_reset)
 {
-  return ue_mng.handle_f1_reset_request(ues_to_reset);
+  return launch_async<du_ue_reset_procedure>(ues_to_reset, ue_mng, params, std::nullopt);
 }
 
 async_task<gnbcu_config_update_response>
@@ -258,4 +260,19 @@ du_param_config_response du_manager_impl::handle_operator_config_request(const d
   });
 
   return fut.get();
+}
+
+void du_manager_impl::handle_si_pdu_update(const du_si_pdu_update_request& req)
+{
+  schedule_async_task(launch_async([&req, this](coro_context<async_task<void>>& ctx) {
+    CORO_BEGIN(ctx);
+
+    if (not running) {
+      // Already stopped.
+      CORO_EARLY_RETURN();
+    }
+    CORO_AWAIT(start_du_mac_si_pdu_update(req, params, cell_mng));
+
+    CORO_RETURN();
+  }));
 }

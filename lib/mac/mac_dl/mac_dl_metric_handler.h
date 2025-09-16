@@ -23,19 +23,14 @@
 #pragma once
 
 #include "mac_dl_configurator.h"
-#include "srsran/adt/bounded_bitset.h"
 #include "srsran/adt/noop_functor.h"
-#include "srsran/adt/slotted_array.h"
 #include "srsran/adt/spsc_queue.h"
 #include "srsran/mac/mac_metrics.h"
-#include "srsran/ran/du_types.h"
 #include "srsran/ran/pci.h"
 #include "srsran/ran/slot_point.h"
 #include "srsran/ran/subcarrier_spacing.h"
-#include "srsran/srslog/logger.h"
 #include "srsran/support/tracing/resource_usage.h"
 #include <memory>
-#include <variant>
 
 namespace srsran {
 
@@ -60,6 +55,9 @@ public:
       if (enabled()) {
         start_tp   = metric_clock::now();
         start_rusg = resource_usage::now();
+        if (not parent->active()) {
+          parent->on_cell_activation(sl_tx);
+        }
       }
     }
     ~slot_measurement()
@@ -87,6 +85,13 @@ public:
       }
     }
 
+    void on_ul_tti_req()
+    {
+      if (enabled()) {
+        ul_tti_req_tp = metric_clock::now();
+      }
+    }
+
   private:
     friend class mac_dl_cell_metric_handler;
 
@@ -94,15 +99,13 @@ public:
     slot_point                                                  sl_tx;
     metric_clock::time_point                                    slot_ind_enqueue_tp;
     metric_clock::time_point                                    start_tp;
-    metric_clock::time_point                                    dl_tti_req_tp{};
-    metric_clock::time_point                                    tx_data_req_tp{};
+    metric_clock::time_point                                    dl_tti_req_tp;
+    metric_clock::time_point                                    tx_data_req_tp;
+    metric_clock::time_point                                    ul_tti_req_tp;
     expected<resource_usage::snapshot, int>                     start_rusg;
   };
 
-  mac_dl_cell_metric_handler(pci_t cell_pci, subcarrier_spacing scs, const mac_cell_metric_report_config& metrics_cfg);
-
-  /// Called when the MAC cell is activated.
-  void on_cell_activation();
+  mac_dl_cell_metric_handler(pci_t cell_pci, subcarrier_spacing scs, mac_cell_metric_notifier* notifier);
 
   /// Called when the MAC cell is deactivated.
   void on_cell_deactivation();
@@ -119,6 +122,11 @@ public:
   }
 
 private:
+  /// Called when the MAC cell is activated.
+  void on_cell_activation(slot_point sl_tx);
+
+  bool active() const { return last_sl_tx.valid(); }
+
   bool enabled() const { return notifier != nullptr; }
 
   struct non_persistent_data {
@@ -141,6 +149,8 @@ private:
     latency_data slot_enqueue;
     latency_data dl_tti_req;
     latency_data tx_data_req;
+    latency_data ul_tti_req;
+    latency_data slot_distance;
     unsigned     count_vol_context_switches{0};
     unsigned     count_invol_context_switches{0};
     /// \brief Whether the cell was marked for deactivation and this is the last report.
@@ -149,21 +159,20 @@ private:
 
   void handle_slot_completion(const slot_measurement& meas);
 
-  void send_new_report(slot_point sl_tx);
+  void send_new_report();
 
-  const pci_t               cell_pci;
-  const unsigned            period_slots;
-  mac_cell_metric_notifier* notifier;
+  const pci_t                    cell_pci;
+  mac_cell_metric_notifier*      notifier;
+  const std::chrono::nanoseconds slot_duration;
 
+  // Last slot indication slot point. If not set, the cell is inactive.
   slot_point last_sl_tx;
-  bool       cell_activated = false;
-
-  // Slot at which the next report is generated.
-  slot_point               next_report_slot;
-  std::chrono::nanoseconds slot_duration{0};
 
   // Metrics tracked
+  /// Data that is reset on every report.
   non_persistent_data data;
+  /// Time point when the last slot indication was sent.
+  metric_clock::time_point last_slot_ind_enqueue_tp{};
 };
 
 } // namespace srsran

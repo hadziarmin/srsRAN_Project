@@ -20,7 +20,7 @@
  *
  */
 
-#include "../../../lib/phy/upper/downlink_processor_single_executor_impl.h"
+#include "../../../lib/phy/upper/downlink_processor_multi_executor_impl.h"
 #include "../../support/task_executor_test_doubles.h"
 #include "../support/resource_grid_test_doubles.h"
 #include "channel_processors/pdcch/pdcch_processor_test_doubles.h"
@@ -64,14 +64,18 @@ TEST(downlinkProcessorTest, worksInOrder)
   prs_processor_spy&    prs_gen_ref = *prs_generator;
 
   std::unique_ptr<downlink_processor_base> dl_proc_base =
-      std::make_unique<downlink_processor_single_executor_impl>(gw,
-                                                                std::move(pdcch_processor),
-                                                                std::move(pdsch_processor),
-                                                                std::move(ssb_processor),
-                                                                std::move(csi_rs_processor),
-                                                                std::move(prs_generator),
-                                                                executor,
-                                                                logger);
+      std::make_unique<downlink_processor_multi_executor_impl>(gw,
+                                                               std::move(pdcch_processor),
+                                                               std::move(pdsch_processor),
+                                                               std::move(ssb_processor),
+                                                               std::move(csi_rs_processor),
+                                                               std::move(prs_generator),
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               logger);
   slot_point slot(1, 2, 1);
   unsigned   sector = 0;
 
@@ -87,18 +91,24 @@ TEST(downlinkProcessorTest, worksInOrder)
   ASSERT_FALSE(gw.sent);
 
   dl_processor->process_ssb({});
-  ASSERT_TRUE(ssb_ref.is_process_called());
 
   pdcch_processor::pdu_t pdu;
   pdu.dci.precoding = precoding_configuration::make_wideband(make_single_port());
   dl_processor->process_pdcch(pdu);
-  ASSERT_TRUE(pdcch_ref.is_process_called());
 
-  std::vector<uint8_t> data = {1, 2, 3, 4};
-  dl_processor->process_pdsch({shared_transport_block(data)}, {});
-  ASSERT_TRUE(pdsch_ref.is_process_called());
-
+  std::vector<uint8_t> pdsch_data = {1, 2, 3, 4};
+  dl_processor->process_pdsch({shared_transport_block(pdsch_data)}, {});
   dl_processor->process_nzp_csi_rs({});
+
+  unsigned task_count = 0;
+  while (executor.try_run_next()) {
+    ++task_count;
+  }
+  ASSERT_EQ(task_count, 4);
+
+  ASSERT_TRUE(ssb_ref.is_process_called());
+  ASSERT_TRUE(pdcch_ref.is_process_called());
+  ASSERT_TRUE(pdsch_ref.is_process_called());
   ASSERT_TRUE(csi_rs_ref.is_map_called());
 
   ASSERT_FALSE(gw.sent);
@@ -126,14 +136,18 @@ TEST(downlinkProcessorTest, finishIsCalledBeforeProcessingPdus)
   prs_processor_spy&    prs_gen_ref = *prs_generator;
 
   std::unique_ptr<downlink_processor_base> dl_proc_base =
-      std::make_unique<downlink_processor_single_executor_impl>(gw,
-                                                                std::move(pdcch_processor),
-                                                                std::move(pdsch_processor),
-                                                                std::move(ssb_processor),
-                                                                std::move(csi_rs_processor),
-                                                                std::move(prs_generator),
-                                                                executor,
-                                                                logger);
+      std::make_unique<downlink_processor_multi_executor_impl>(gw,
+                                                               std::move(pdcch_processor),
+                                                               std::move(pdsch_processor),
+                                                               std::move(ssb_processor),
+                                                               std::move(csi_rs_processor),
+                                                               std::move(prs_generator),
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               logger);
 
   slot_point slot(1, 2, 1);
   unsigned   sector = 0;
@@ -179,14 +193,18 @@ TEST(downlinkProcessorTest, twoConsecutiveSlots)
   manual_task_worker       executor(10);
 
   std::unique_ptr<downlink_processor_base> dl_proc_base =
-      std::make_unique<downlink_processor_single_executor_impl>(gw,
-                                                                std::make_unique<pdcch_processor_spy>(),
-                                                                std::make_unique<pdsch_processor_spy>(),
-                                                                std::make_unique<ssb_processor_spy>(),
-                                                                std::make_unique<csi_rs_processor_spy>(),
-                                                                std::make_unique<prs_processor_spy>(),
-                                                                executor,
-                                                                logger);
+      std::make_unique<downlink_processor_multi_executor_impl>(gw,
+                                                               std::make_unique<pdcch_processor_spy>(),
+                                                               std::make_unique<pdsch_processor_spy>(),
+                                                               std::make_unique<ssb_processor_spy>(),
+                                                               std::make_unique<csi_rs_processor_spy>(),
+                                                               std::make_unique<prs_processor_spy>(),
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               logger);
 
   slot_point slot(1, 2, 1);
   unsigned   sector = 0;
@@ -206,6 +224,8 @@ TEST(downlinkProcessorTest, twoConsecutiveSlots)
   ASSERT_TRUE(!gw.sent);
 
   dl_processor.release();
+  while (executor.try_run_next()) {
+  }
   ASSERT_TRUE(gw.sent);
 
   slot_point slot2(1, 2, 2);
@@ -221,6 +241,10 @@ TEST(downlinkProcessorTest, twoConsecutiveSlots)
 
   dl_processor.release();
 
+  ASSERT_FALSE(gw.sent);
+  while (executor.try_run_next()) {
+  }
+
   ASSERT_TRUE(gw.sent);
 }
 
@@ -230,14 +254,18 @@ TEST(downlinkProcessorTest, finishWithoutProcessingPdusSendsTheGrid)
   manual_task_worker_always_enqueue_tasks executor(10);
 
   std::unique_ptr<downlink_processor_base> dl_proc_base =
-      std::make_unique<downlink_processor_single_executor_impl>(gw,
-                                                                std::make_unique<pdcch_processor_spy>(),
-                                                                std::make_unique<pdsch_processor_spy>(),
-                                                                std::make_unique<ssb_processor_spy>(),
-                                                                std::make_unique<csi_rs_processor_spy>(),
-                                                                std::make_unique<prs_processor_spy>(),
-                                                                executor,
-                                                                logger);
+      std::make_unique<downlink_processor_multi_executor_impl>(gw,
+                                                               std::make_unique<pdcch_processor_spy>(),
+                                                               std::make_unique<pdsch_processor_spy>(),
+                                                               std::make_unique<ssb_processor_spy>(),
+                                                               std::make_unique<csi_rs_processor_spy>(),
+                                                               std::make_unique<prs_processor_spy>(),
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               executor,
+                                                               logger);
   slot_point slot(1, 2, 1);
   unsigned   sector = 0;
 

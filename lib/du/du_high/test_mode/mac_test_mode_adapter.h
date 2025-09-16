@@ -22,14 +22,12 @@
 
 #pragma once
 
+#include "mac_test_mode_decision_history.h"
 #include "mac_test_mode_ue_repository.h"
 #include "srsran/du/du_high/du_test_mode_config.h"
 #include "srsran/mac/mac.h"
 #include "srsran/mac/mac_cell_result.h"
-#include "srsran/scheduler/result/pucch_info.h"
-#include "srsran/scheduler/result/pusch_info.h"
 #include "srsran/srslog/srslog.h"
-#include <mutex>
 
 namespace srsran {
 namespace srs_du {
@@ -75,6 +73,7 @@ public:
                              mac_cell_slot_handler&                                  slot_handler_,
                              mac_cell_result_notifier&                               result_notifier_,
                              std::function<void(rnti_t)>                             dl_bs_notifier_,
+                             mac_test_mode_event_handler&                            event_handler_,
                              mac_test_mode_ue_repository&                            ue_info_mgr_);
 
   void on_new_downlink_scheduler_results(const mac_dl_sched_result& dl_res) override;
@@ -84,13 +83,13 @@ public:
     result_notifier.on_new_downlink_data(dl_data);
   }
 
-  // Intercepts the UL results coming from the MAC.
+  // Intercepts the calls coming from the real MAC.
   void on_new_uplink_scheduler_results(const mac_ul_sched_result& ul_res) override;
-
-  void on_cell_results_completion(slot_point slot) override { result_notifier.on_cell_results_completion(slot); }
+  void on_cell_results_completion(slot_point slot) override;
 
   void handle_slot_indication(const mac_cell_timing_context& context) override;
   void handle_error_indication(slot_point sl_tx, error_event event) override;
+  void handle_stop_indication() override;
 
   void handle_crc(const mac_crc_indication_message& msg) override;
 
@@ -99,35 +98,28 @@ public:
   void handle_srs(const mac_srs_indication_message& msg) override;
 
 private:
-  struct slot_decision_history {
-    // Locks a given slot.
-    // Note: In normal scenarios, this mutex will have no contention, as the times of write and read are separate.
-    // However, if the ring buffer is too small, this may stop being true.
-    mutable std::mutex         mutex;
-    slot_point                 slot;
-    std::vector<pucch_info>    pucchs;
-    std::vector<ul_sched_info> puschs;
-  };
-
   void forward_uci_ind_to_mac(const mac_uci_indication_message& uci_msg);
   void forward_crc_ind_to_mac(const mac_crc_indication_message& crc_msg);
 
-  size_t get_ring_idx(slot_point sl) const { return sl.to_uint() % sched_decision_history.size(); }
+  const du_cell_index_t                           cell_index;
+  const du_test_mode_config::test_mode_ue_config& test_ue_cfg;
+  mac_cell_control_information_handler&           adapted;
+  mac_pdu_handler&                                pdu_handler;
+  mac_cell_slot_handler&                          slot_handler;
+  mac_cell_result_notifier&                       result_notifier;
+  std::function<void(rnti_t)>                     dl_bs_notifier;
+  srslog::basic_logger&                           logger;
 
-  const du_cell_index_t                                   cell_index;
-  const srs_du::du_test_mode_config::test_mode_ue_config& test_ue_cfg;
-  mac_cell_control_information_handler&                   adapted;
-  mac_pdu_handler&                                        pdu_handler;
-  mac_cell_slot_handler&                                  slot_handler;
-  mac_cell_result_notifier&                               result_notifier;
-  std::function<void(rnti_t)>                             dl_bs_notifier;
-  srslog::basic_logger&                                   logger;
+  /// Ring buffer of slot decision history.
+  mac_test_mode_cell_decision_history history;
 
-  std::vector<slot_decision_history> sched_decision_history;
-
+  mac_test_mode_event_handler& event_handler;
   mac_test_mode_ue_repository& ue_info_mgr;
 
   slot_point last_slot_ind;
+
+  // Counter of how many test UEs have been created in this cell.
+  unsigned nof_test_ues_created = 0;
 };
 
 class mac_test_mode_adapter final : public mac_interface,
@@ -150,11 +142,6 @@ public:
 
   mac_cell_time_mapper& get_time_mapper(du_cell_index_t cell_index) override;
 
-  mac_cell_rach_handler& get_rach_handler(du_cell_index_t cell_index) override
-  {
-    return mac_adapted->get_rach_handler(cell_index);
-  }
-
   mac_cell_slot_handler& get_slot_handler(du_cell_index_t cell_index) override
   {
     return *cell_info_handler[cell_index];
@@ -172,6 +159,18 @@ public:
   }
 
   mac_ue_configurator& get_ue_configurator() override { return *this; }
+
+  mac_cell_rach_handler& get_rach_handler(du_cell_index_t cell_index) override
+  {
+    struct dummy_mac_cell_rach_handler : public mac_cell_rach_handler {
+      void handle_rach_indication(const mac_rach_indication& rach_ind) override
+      {
+        // do nothing
+      }
+    };
+    static dummy_mac_cell_rach_handler rach_ignorer;
+    return rach_ignorer;
+  }
 
   mac_cell_control_information_handler& get_control_info_handler(du_cell_index_t cell_index) override;
 
@@ -193,6 +192,8 @@ private:
 
   srs_du::du_test_mode_config::test_mode_ue_config test_ue;
   std::unique_ptr<mac_interface>                   mac_adapted;
+
+  mac_test_mode_event_handler event_handler;
 
   mac_test_mode_ue_repository ue_info_mgr;
 

@@ -48,34 +48,7 @@ using namespace fapi_adaptor;
 
 namespace {
 
-class downlink_processor_dummy : public unique_downlink_processor::downlink_processor_callback
-{
-public:
-  void process_pdcch(const pdcch_processor::pdu_t& pdu) override
-  {
-    srslog::fetch_basic_logger("FAPI").warning("Could not enqueue PDCCH PDU in the downlink processor");
-  }
-  void process_pdsch(static_vector<shared_transport_block, pdsch_processor::MAX_NOF_TRANSPORT_BLOCKS> data,
-                     const pdsch_processor::pdu_t&                                                    pdu) override
-  {
-    srslog::fetch_basic_logger("FAPI").warning("Could not enqueue PDSCH PDU in the downlink processor");
-  }
-  void process_ssb(const ssb_processor::pdu_t& pdu) override
-  {
-    srslog::fetch_basic_logger("FAPI").warning("Could not enqueue SSB PDU in the downlink processor");
-  }
-  void process_nzp_csi_rs(const nzp_csi_rs_generator::config_t& config) override
-  {
-    srslog::fetch_basic_logger("FAPI").warning("Could not enqueue NZP-CSI-RS PDU in the downlink processor");
-  }
-  void process_prs(const prs_generator_configuration& config) override
-  {
-    srslog::fetch_basic_logger("FAPI").warning("Could not enqueue PRS PDU in the downlink processor");
-  }
-  void finish_processing_pdus() override {}
-};
-
-class slot_error_notifier_dummy : public fapi::slot_error_message_notifier
+class error_notifier_dummy : public fapi::error_message_notifier
 {
 public:
   void on_error_indication(const fapi::error_indication_message& msg) override {}
@@ -83,13 +56,9 @@ public:
 
 } // namespace
 
-/// This dummy object is passed to the constructor of the FAPI-to-PHY translator as a placeholder for the actual
-/// downlink processor, which will be later set up using the downlink processor pool.
-static downlink_processor_dummy dummy_dl_processor;
-
 /// This dummy object is passed to the constructor of the FAPI-to-PHY translator as a placeholder for the actual error
 /// notifier.
-static slot_error_notifier_dummy dummy_error_notifier;
+static error_notifier_dummy dummy_error_notifier;
 
 fapi_to_phy_translator::fapi_to_phy_translator(const fapi_to_phy_translator_config&  config,
                                                fapi_to_phy_translator_dependencies&& dependencies) :
@@ -99,7 +68,6 @@ fapi_to_phy_translator::fapi_to_phy_translator(const fapi_to_phy_translator_conf
   logger(*dependencies.logger),
   dl_pdu_validator(*dependencies.dl_pdu_validator),
   ul_request_processor(*dependencies.ul_request_processor),
-  ul_rg_pool(*dependencies.ul_rg_pool),
   ul_pdu_validator(*dependencies.ul_pdu_validator),
   ul_pdu_repository(*dependencies.ul_pdu_repository),
   slot_controller_mngr(*dependencies.dl_processor_pool,
@@ -133,7 +101,7 @@ fapi_to_phy_translator::slot_based_upper_phy_controller::slot_based_upper_phy_co
 
   // If the resource grid is not valid, all DL transmissions for this slot shall be discarded.
   if (!grid) {
-    dl_processor = unique_downlink_processor(dummy_dl_processor);
+    dl_processor = {};
     return;
   }
 
@@ -145,7 +113,7 @@ fapi_to_phy_translator::slot_based_upper_phy_controller::slot_based_upper_phy_co
 
   // Swap the DL processor with a dummy if it failed to configure the resource grid.
   if (!dl_processor.is_valid()) {
-    dl_processor = unique_downlink_processor(dummy_dl_processor);
+    dl_processor = {};
   }
 }
 
@@ -157,11 +125,6 @@ fapi_to_phy_translator::slot_based_upper_phy_controller::operator=(
   swap(slot, other.slot);
   swap(dl_processor, other.dl_processor);
   return *this;
-}
-
-fapi_to_phy_translator::slot_based_upper_phy_controller::~slot_based_upper_phy_controller()
-{
-  dl_processor = unique_downlink_processor(dummy_dl_processor);
 }
 
 namespace {
@@ -366,8 +329,22 @@ void fapi_to_phy_translator::dl_tti_request(const fapi::dl_tti_request_message& 
     return;
   }
 
-  // Create controller for the current slot.
-  slot_based_upper_phy_controller& controller = slot_controller_mngr.acquire_controller(slot);
+  // Ignore FAPI request message when there are no PDUs to process.
+  if (msg.pdus.empty()) {
+    return;
+  }
+
+  // Get controller for the current slot.
+  slot_based_upper_phy_controller& controller = slot_controller_mngr.get_controller(slot);
+  // Check if the controller is valid.
+  if (!controller.is_initialized()) {
+    logger.warning("Sector#{}: Could not acquire downlink processor for slot {}.{}", sector_id, msg.sfn, msg.slot);
+    // Raise out of sync error.
+    error_notifier.get().on_error_indication(
+        fapi::build_msg_error_indication(msg.sfn, msg.slot, fapi::message_type_id::dl_tti_request));
+
+    return;
+  }
 
   // Translate the downlink PDUs.
   expected<downlink_pdus> pdus =
@@ -382,7 +359,7 @@ void fapi_to_phy_translator::dl_tti_request(const fapi::dl_tti_request_message& 
   // Raise invalid format error.
   if (!pdus.has_value()) {
     error_notifier.get().on_error_indication(
-        fapi::build_msg_slot_error_indication(msg.sfn, msg.slot, fapi::message_type_id::dl_tti_request));
+        fapi::build_msg_error_indication(msg.sfn, msg.slot, fapi::message_type_id::dl_tti_request));
     return;
   }
 
@@ -403,15 +380,6 @@ void fapi_to_phy_translator::dl_tti_request(const fapi::dl_tti_request_message& 
     pdsch_repository.pdus.push_back(pdsch);
   }
 
-  if (msg.is_last_message_in_slot) {
-    srsran_assert(
-        pdsch_repository.empty(),
-        "Sector#{}: The DL_TTI.request message in slot '{}' has been marked as the last message in the slot, but a "
-        "TX_Data.request message is also being expected",
-        sector_id,
-        slot);
-    slot_controller_mngr.release_controller(slot);
-  }
   l1_dl_tracer << trace_event("dl_tti_request", tp);
 }
 
@@ -534,20 +502,6 @@ void fapi_to_phy_translator::ul_tti_request(const fapi::ul_tti_request_message& 
   slot_point  current_slot = get_current_slot();
   trace_point tp           = l1_ul_tracer.now();
 
-  // Obtain the PDU repository for the message slot.
-  unique_uplink_pdu_slot_repository ul_pdu_slot_repository = ul_pdu_repository.get_pdu_slot_repository(slot);
-
-  // Verify UL PDU repository is valid.
-  if (!ul_pdu_slot_repository.is_valid()) {
-    logger.warning(
-        "Sector#{}: Real-time failure in FAPI: UL processor is busy for slot {}.{}.", sector_id, msg.sfn, msg.slot);
-    // Raise out of sync error.
-    error_notifier.get().on_error_indication(
-        fapi::build_msg_slot_error_indication(msg.sfn, msg.slot, fapi::message_type_id::ul_tti_request));
-    l2_tracer << instant_trace_event{"ul_tti_req_busy", instant_trace_event::cpu_scope::global};
-    return;
-  }
-
   // Release the controller of the previous slot in case that it has not been released before. In case that it already
   // is released, this call will do nothing.
   slot_controller_mngr.release_controller(slot - 1);
@@ -565,13 +519,32 @@ void fapi_to_phy_translator::ul_tti_request(const fapi::ul_tti_request_message& 
     return;
   }
 
+  // No PDUs to process.
+  if (msg.pdus.empty() && !allow_request_on_empty_ul_tti) {
+    return;
+  }
+
+  // Obtain the PDU repository for the message slot.
+  unique_uplink_pdu_slot_repository ul_pdu_slot_repository = ul_pdu_repository.get_pdu_slot_repository(slot);
+
+  // Verify UL PDU repository is valid.
+  if (!ul_pdu_slot_repository.is_valid()) {
+    logger.warning(
+        "Sector#{}: Real-time failure in FAPI: UL processor is busy for slot {}.{}.", sector_id, msg.sfn, msg.slot);
+    // Raise out of sync error.
+    error_notifier.get().on_error_indication(
+        fapi::build_msg_error_indication(msg.sfn, msg.slot, fapi::message_type_id::ul_tti_request));
+    l2_tracer << instant_trace_event{"ul_tti_req_busy", instant_trace_event::cpu_scope::global};
+    return;
+  }
+
   expected<uplink_pdus> pdus = translate_ul_tti_pdus_to_phy_pdus(
       msg, ul_pdu_validator, prach_cfg, carrier_cfg, prach_ports, logger, *part2_repo, sector_id);
 
   // Raise invalid format error.
   if (!pdus.has_value()) {
     error_notifier.get().on_error_indication(
-        fapi::build_msg_slot_error_indication(msg.sfn, msg.slot, fapi::message_type_id::ul_tti_request));
+        fapi::build_msg_error_indication(msg.sfn, msg.slot, fapi::message_type_id::ul_tti_request));
     return;
   }
 
@@ -596,24 +569,24 @@ void fapi_to_phy_translator::ul_tti_request(const fapi::ul_tti_request_message& 
     ul_pdu_slot_repository->add_srs_pdu(pdu);
   }
 
-  // Release repository - it ensures the repository is available when the UL request reaches the RU.
-  ul_pdu_slot_repository.release();
+  // Release repository and obtain uplink resource grid - it ensures that the uplink processing associated with the slot
+  // is ready when the UL request reaches the RU.
+  shared_resource_grid ul_rg = ul_pdu_slot_repository.release();
 
-  // Notify to capture uplink slot.
+  // Prepare the capture uplink slot context.
   resource_grid_context rg_context;
   rg_context.slot   = slot;
   rg_context.sector = sector_id;
 
-  shared_resource_grid ul_rg = ul_rg_pool.allocate_resource_grid(slot);
-
   // Abort UL processing for this slot if the resource grid is not available.
-  if (!ul_rg) {
+  if (SRSRAN_UNLIKELY(!ul_rg)) {
     logger.warning("Sector#{}: Failed to allocate UL resource grid for UL_TTI.request from slot {}.{}",
                    sector_id,
                    msg.sfn,
                    msg.slot);
     // Raise out of message transmit error.
-    error_notifier.get().on_error_indication(fapi::build_msg_tx_error_indication(msg.sfn, msg.slot));
+    error_notifier.get().on_error_indication(
+        fapi::build_msg_error_indication(msg.sfn, msg.slot, fapi::message_type_id::ul_tti_request));
     l1_ul_tracer << instant_trace_event{"ul_tti_failed_grid", instant_trace_event::cpu_scope::global};
     return;
   }
@@ -641,6 +614,10 @@ void fapi_to_phy_translator::ul_dci_request(const fapi::ul_dci_request_message& 
     return;
   }
 
+  if (msg.pdus.empty()) {
+    return;
+  }
+
   static_vector<pdcch_processor::pdu_t, MAX_PUCCH_PDUS_PER_SLOT> pdus;
   for (const auto& pdu : msg.pdus) {
     // For each DCI in the PDCCH PDU, create a pdcch_processor::pdu_t.
@@ -661,20 +638,18 @@ void fapi_to_phy_translator::ul_dci_request(const fapi::ul_dci_request_message& 
 
   slot_point                       slot(scs, msg.sfn, msg.slot);
   slot_based_upper_phy_controller& controller = slot_controller_mngr.get_controller(slot);
+  // Check if the controller is valid.
+  if (!controller.is_initialized()) {
+    logger.warning("Sector#{}: Could not acquire downlink processor for slot {}.{}", sector_id, msg.sfn, msg.slot);
+    // Raise out of sync error.
+    error_notifier.get().on_error_indication(fapi::build_msg_ul_dci_error_indication(msg.sfn, msg.slot));
+
+    return;
+  }
   for (const auto& pdcch_pdu : pdus) {
     controller->process_pdcch(pdcch_pdu);
   }
 
-  // No more data to process, controller can be removed.
-  if (msg.is_last_message_in_slot) {
-    srsran_assert(
-        pdsch_repository.empty(),
-        "Sector#{}: The UL_DCI.request message in slot '{}' has been marked as the last message in the slot, but a "
-        "TX_Data.request message is also being expected",
-        sector_id,
-        slot);
-    slot_controller_mngr.release_controller(slot);
-  }
   l1_ul_tracer << trace_event("ul_dci_request", tp);
 }
 
@@ -725,15 +700,40 @@ void fapi_to_phy_translator::tx_data_request(const fapi::tx_data_request_message
     return;
   }
 
+  // Message with no PDUs.
+  if (msg.pdus.empty()) {
+    // Check the repo for PDUs
+    if (!pdsch_repository.pdus.empty()) {
+      logger.warning("Sector#{}: Invalid TX_Data.request. Number of PDUs does not match repository size", sector_id);
+
+      // Raise invalid format error.
+      error_notifier.get().on_error_indication(fapi::build_msg_tx_error_indication(msg.sfn, msg.slot));
+
+      pdsch_repository.clear();
+    }
+    return;
+  }
+
   // Skip message if there are no PDSCH PDUs inside the repository. This may be caused by an unsupported PDU in the
   // DL_TTI.request.
   if (pdsch_repository.empty()) {
+    logger.warning("Sector#{}: Invalid TX_Data.request. Empty PDU repository", sector_id);
+
     // Raise invalid format error.
     error_notifier.get().on_error_indication(fapi::build_msg_tx_error_indication(msg.sfn, msg.slot));
     return;
   }
 
   slot_based_upper_phy_controller& controller = slot_controller_mngr.get_controller(slot);
+  // Check if the controller is valid.
+  if (!controller.is_initialized()) {
+    logger.warning("Sector#{}: Could not acquire downlink processor for slot {}.{}", sector_id, msg.sfn, msg.slot);
+    // Raise out of sync error.
+    error_notifier.get().on_error_indication(fapi::build_msg_tx_error_indication(msg.sfn, msg.slot));
+
+    return;
+  }
+
   for (unsigned i = 0, e = msg.pdus.size(); i != e; ++i) {
     // Process PDSCH.
     controller->process_pdsch(
@@ -741,12 +741,14 @@ void fapi_to_phy_translator::tx_data_request(const fapi::tx_data_request_message
         pdsch_repository.pdus[i]);
   }
 
-  slot_controller_mngr.release_controller(slot);
-
   // All the PDSCH PDUs have been processed. Clear the repository.
   pdsch_repository.clear();
 
   l1_dl_tracer << trace_event("tx_data_request", tp);
+}
+void fapi_to_phy_translator::on_last_message(slot_point slot)
+{
+  slot_controller_mngr.release_controller(slot);
 }
 
 void fapi_to_phy_translator::handle_new_slot(slot_point slot)
@@ -774,7 +776,11 @@ bool fapi_to_phy_translator::is_message_in_time(const T& msg) const
 fapi_to_phy_translator::slot_based_upper_phy_controller&
 fapi_to_phy_translator::slot_based_upper_phy_controller_manager::get_controller(slot_point slot)
 {
-  return controller(slot);
+  if (auto& controller_slot = controller(slot); controller_slot.is_initialized()) {
+    return controller_slot;
+  }
+
+  return acquire_controller(slot);
 }
 
 void fapi_to_phy_translator::slot_based_upper_phy_controller_manager::release_controller(slot_point slot)

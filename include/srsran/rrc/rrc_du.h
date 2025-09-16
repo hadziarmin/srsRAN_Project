@@ -23,9 +23,11 @@
 #pragma once
 
 #include "srsran/cu_cp/cell_meas_manager_config.h"
+#include "srsran/ran/cause/common.h"
 #include "srsran/rrc/rrc_cell_context.h"
 #include "srsran/rrc/rrc_metrics.h"
 #include "srsran/rrc/rrc_ue.h"
+#include <chrono>
 
 namespace srsran {
 namespace srs_cu_cp {
@@ -33,6 +35,7 @@ namespace srs_cu_cp {
 struct rrc_cell_info {
   nr_band                      band;
   std::vector<rrc_meas_timing> meas_timings;
+  rrc_timers_t                 timers;
 };
 
 class rrc_du_cell_manager
@@ -110,10 +113,25 @@ public:
   virtual ~rrc_du_connection_event_handler() = default;
 
   /// \brief Add the successful RRC setup to the metrics.
-  virtual void handle_successful_rrc_setup() = 0;
+  /// \param[in] cause The establishment cause of the RRC connection. If this is given the connection establishment
+  /// metrics are increased. Otherwise the connection metrics are increased.
+  virtual void handle_successful_rrc_setup(std::optional<establishment_cause_t> cause = std::nullopt) = 0;
 
   /// \brief Add the successful RRC release to the metrics.
   virtual void handle_successful_rrc_release() = 0;
+
+  /// \brief Add the attempted RRC connection establishment to the metrics.
+  /// \param[in] cause The establishment cause of the RRC connection.
+  virtual void handle_attempted_rrc_setup(establishment_cause_t cause) = 0;
+
+  /// \brief Add the attempted RRC connection re-establishment to the metrics.
+  virtual void handle_attempted_rrc_reestablishment() = 0;
+
+  /// \brief Add the successful RRC connection re-establishment to the metrics.
+  virtual void handle_successful_rrc_reestablishment() = 0;
+
+  /// \brief Add the successful RRC connection re-establishment fallback to the metrics.
+  virtual void handle_successful_rrc_reestablishment_fallback() = 0;
 };
 
 class rrc_du_metrics_collector

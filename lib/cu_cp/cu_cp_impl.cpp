@@ -23,7 +23,10 @@
 #include "cu_cp_impl.h"
 #include "du_processor/du_processor_repository.h"
 #include "metrics_handler/metrics_handler_impl.h"
+#include "routines/amf_connection_loss_routine.h"
+#include "routines/cell_activation_routine.h"
 #include "routines/initial_context_setup_routine.h"
+#include "routines/mobility/inter_cu_handover_source_routine.h"
 #include "routines/mobility/inter_cu_handover_target_routine.h"
 #include "routines/mobility/intra_cu_handover_routine.h"
 #include "routines/mobility/intra_cu_handover_target_routine.h"
@@ -40,7 +43,9 @@
 #include "srsran/nrppa/nrppa.h"
 #include "srsran/nrppa/nrppa_factory.h"
 #include "srsran/rrc/rrc_du.h"
+#include "srsran/support/async/coroutine.h"
 #include "srsran/support/compiler.h"
+#include "srsran/support/synchronization/sync_event.h"
 #include <chrono>
 #include <dlfcn.h>
 #include <future>
@@ -75,17 +80,24 @@ cu_cp_impl::cu_cp_impl(const cu_cp_configuration& config_) :
                              rrc_du_cu_cp_notifier,
                              conn_notifier,
                              srslog::fetch_basic_logger("CU-CP")}),
-  cu_up_db(cu_up_repository_config{cfg, e1ap_ev_notifier, srslog::fetch_basic_logger("CU-CP")}),
+  cu_up_db(cu_up_repository_config{cfg, e1ap_ev_notifier, common_task_sched, srslog::fetch_basic_logger("CU-CP")}),
   paging_handler(du_db),
   ngap_db(ngap_repository_config{cfg, get_cu_cp_ngap_handler(), paging_handler, srslog::fetch_basic_logger("CU-CP")}),
   mobility_mng(cfg.mobility.mobility_manager_config, mobility_manager_ev_notifier, ngap_db, du_db, ue_mng),
+  controller(cfg,
+             get_cu_cp_amf_reconnection_handler(),
+             common_task_sched,
+             ngap_db,
+             cu_up_db,
+             du_db,
+             *cfg.services.cu_cp_executor),
   metrics_hdlr(std::make_unique<metrics_handler_impl>(*cfg.services.cu_cp_executor,
                                                       *cfg.services.timers,
                                                       ue_mng,
                                                       du_db,
                                                       ngap_db,
                                                       mobility_mng)),
-  cu_cp_cfgtr(mobility_manager_ev_notifier)
+  cu_cp_cfgtr(mobility_manager_ev_notifier, du_db, ngap_db, ue_mng)
 {
   assert_cu_cp_configuration_valid(cfg);
 
@@ -99,15 +111,17 @@ cu_cp_impl::cu_cp_impl(const cu_cp_configuration& config_) :
   rrc_du_cu_cp_notifier.connect_cu_cp(get_cu_cp_measurement_config_handler());
   cell_meas_mobility_notifier.connect_mobility_manager(mobility_mng);
 
-  controller = std::make_unique<cu_cp_controller>(
-      cfg, common_task_sched, ngap_db, cu_up_db, du_db, *cfg.services.cu_cp_executor);
-  conn_notifier.connect_node_connection_handler(*controller);
+  conn_notifier.connect_node_connection_handler(controller);
 
   // Start statistics report timer.
   statistics_report_timer = cfg.services.timers->create_unique_timer(*cfg.services.cu_cp_executor);
   statistics_report_timer.set(cfg.metrics.statistics_report_period,
                               [this](timer_id_t /*tid*/) { on_statistics_report_timer_expired(); });
   statistics_report_timer.run();
+  if (cfg.metrics_notifier != nullptr and cfg.metrics.metrics_report_period.count() != 0) {
+    periodic_metric_report_request metric_cfg{cfg.metrics.metrics_report_period, cfg.metrics_notifier};
+    metrics_session = metrics_hdlr->create_periodic_report_session(metric_cfg);
+  }
 }
 
 cu_cp_impl::~cu_cp_impl()
@@ -122,7 +136,7 @@ bool cu_cp_impl::start()
 
   if (not cfg.services.cu_cp_executor->execute([this, &p]() {
         // Start AMF connection procedure.
-        controller->amf_connection_handler().connect_to_amf(&p);
+        controller.amf_connection_handler().connect_to_amf(&p);
       })) {
     report_fatal_error("Failed to initiate CU-CP setup");
   }
@@ -139,16 +153,20 @@ void cu_cp_impl::stop()
   logger.info("Stopping CU-CP...");
 
   // Shut down components from within CU-CP executor.
-  while (not cfg.services.cu_cp_executor->execute([this]() {
+  sync_event ev;
+  while (not cfg.services.cu_cp_executor->execute([this, token = ev.get_token()]() {
     // Stop statistics gathering.
     statistics_report_timer.stop();
+    if (metrics_session != nullptr) {
+      metrics_session->stop();
+    }
   })) {
     logger.debug("Failed to dispatch CU-CP stop task. Retrying...");
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
+  ev.wait();
 
-  controller->stop();
-
+  controller.stop();
   logger.info("CU-CP stopped successfully.");
 }
 
@@ -164,7 +182,7 @@ bool cu_cp_impl::amfs_are_connected()
   }
 
   for (const auto& [amf_index, ngap] : ngap_db.get_ngaps()) {
-    if (not controller->amf_connection_handler().is_amf_connected(amf_index)) {
+    if (not controller.amf_connection_handler().is_amf_connected(amf_index)) {
       return false;
     }
   }
@@ -183,6 +201,35 @@ cu_cp_impl::create_nrppa_entity(const cu_cp_configuration& cu_cp_cfg,
 }
 
 #endif // SRSRAN_HAS_ENTERPRISE
+
+void cu_cp_impl::handle_bearer_context_release_request(const cu_cp_bearer_context_release_request& msg)
+{
+  cu_cp_ue* ue = ue_mng.find_du_ue(msg.ue_index);
+  srsran_assert(ue != nullptr, "ue={}: Could not find DU UE", msg.ue_index);
+
+  if (ue->get_handover_ue_release_timer().is_running()) {
+    logger.debug("ue={}: Ignoring Bearer Context Release Request. Cause: Ongoing handover for this UE", msg.ue_index);
+    return;
+  }
+
+  cu_cp_ue_context_release_request req;
+  req.ue_index = msg.ue_index;
+  req.cause    = msg.cause;
+
+  // Add PDU Session IDs.
+  auto& up_resource_manager            = ue->get_up_resource_manager();
+  req.pdu_session_res_list_cxt_rel_req = up_resource_manager.get_pdu_sessions();
+
+  logger.debug("ue={}: Requesting UE context release with cause={}", req.ue_index, req.cause);
+
+  // Schedule on UE task scheduler.
+  ue->get_task_sched().schedule_async_task(launch_async([this, req](coro_context<async_task<void>>& ctx) mutable {
+    CORO_BEGIN(ctx);
+    // Notify NGAP to request a release from the AMF.
+    CORO_AWAIT(handle_ue_context_release(req));
+    CORO_RETURN();
+  }));
+}
 
 void cu_cp_impl::handle_bearer_context_inactivity_notification(const cu_cp_inactivity_notification& msg)
 {
@@ -215,6 +262,39 @@ void cu_cp_impl::handle_bearer_context_inactivity_notification(const cu_cp_inact
   } else {
     logger.debug("Inactivity notification level not supported");
   }
+}
+
+void cu_cp_impl::handle_e1_release_request(cu_up_index_t cu_up_index, const std::vector<ue_index_t>& ue_list)
+{
+  for (const auto& ue_index : ue_list) {
+    cu_cp_ue* ue = ue_mng.find_du_ue(ue_index);
+    srsran_assert(ue != nullptr, "ue={}: Could not find DU UE", ue_index);
+
+    cu_cp_ue_context_release_request req;
+    req.ue_index = ue_index;
+    req.cause    = ngap_cause_radio_network_t::release_due_to_ngran_generated_reason;
+
+    // Add PDU Session IDs.
+    auto& up_resource_manager            = ue->get_up_resource_manager();
+    req.pdu_session_res_list_cxt_rel_req = up_resource_manager.get_pdu_sessions();
+
+    logger.debug("ue={}: Requesting UE context release with cause={}", req.ue_index, req.cause);
+
+    // Schedule on UE task scheduler.
+    ue->get_task_sched().schedule_async_task(launch_async([this, req](coro_context<async_task<void>>& ctx) mutable {
+      CORO_BEGIN(ctx);
+      // Notify NGAP to request a release from the AMF.
+      CORO_AWAIT(handle_ue_context_release(req));
+      CORO_RETURN();
+    }));
+  }
+
+  // Schedule removal of CU-UP processor.
+  common_task_sched.schedule_async_task(launch_async([this, cu_up_index](coro_context<async_task<void>>& ctx) mutable {
+    CORO_BEGIN(ctx);
+    CORO_AWAIT(cu_up_db.remove_cu_up(cu_up_index));
+    CORO_RETURN();
+  }));
 }
 
 rrc_ue_reestablishment_context_response
@@ -317,6 +397,33 @@ void cu_cp_impl::handle_rrc_reestablishment_complete(ue_index_t old_ue_index)
   };
 }
 
+void cu_cp_impl::handle_rrc_reconf_complete_indicator(ue_index_t ue_index)
+{
+  cu_cp_ue* ue = ue_mng.find_du_ue(ue_index);
+  srsran_assert(ue != nullptr, "ue={}: Could not find DU UE", ue_index);
+
+  if (ue != nullptr) {
+    ue->get_task_sched().schedule_async_task(
+        launch_async([this, ue_index, ue_context_mod_request = f1ap_ue_context_modification_request{}](
+                         coro_context<async_task<void>>& ctx) mutable {
+          CORO_BEGIN(ctx);
+
+          if (ue_mng.find_du_ue(ue_index) == nullptr) {
+            CORO_EARLY_RETURN();
+          }
+
+          ue_context_mod_request.ue_index               = ue_index;
+          ue_context_mod_request.rrc_recfg_complete_ind = f1ap_rrc_recfg_complete_ind::true_value;
+
+          CORO_AWAIT(du_db.get_du_processor(ue_mng.find_du_ue(ue_index)->get_du_index())
+                         .get_f1ap_handler()
+                         .handle_ue_context_modification_request(ue_context_mod_request));
+
+          CORO_RETURN();
+        }));
+  }
+}
+
 async_task<bool> cu_cp_impl::handle_ue_context_transfer(ue_index_t ue_index, ue_index_t old_ue_index)
 {
   srsran_assert(cu_up_db.find_cu_up_processor(uint_to_cu_up_index(0)) != nullptr,
@@ -406,8 +513,16 @@ void cu_cp_impl::handle_handover_reconfiguration_sent(const cu_cp_intra_cu_hando
 
   cu_cp_ue* ue = ue_mng.find_du_ue(request.target_ue_index);
 
-  ue->get_task_sched().schedule_async_task(
-      launch_async<intra_cu_handover_target_routine>(request, *this, get_cu_cp_ue_context_handler(), ue_mng, logger));
+  ue->get_task_sched().schedule_async_task(launch_async<intra_cu_handover_target_routine>(
+      request,
+      cu_up_db.find_cu_up_processor(uint_to_cu_up_index(0))->get_e1ap_bearer_context_manager(),
+      du_db.get_du_processor(ue->get_du_index()).get_f1ap_handler(),
+      *this,
+      get_cu_cp_ue_removal_handler(),
+      *this,
+      ue_mng,
+      mobility_mng,
+      logger));
 }
 
 void cu_cp_impl::handle_handover_ue_context_push(ue_index_t source_ue_index, ue_index_t target_ue_index)
@@ -457,7 +572,7 @@ async_task<void> cu_cp_impl::handle_ue_context_release(const cu_cp_ue_context_re
       request, ngap->get_ngap_control_message_handler(), *this, logger);
 }
 
-bool cu_cp_impl::handle_handover_request(ue_index_t ue_index, security::security_context sec_ctxt)
+bool cu_cp_impl::handle_handover_request(ue_index_t ue_index, const security::security_context& sec_ctxt)
 {
   cu_cp_ue* ue = ue_mng.find_ue(ue_index);
   if (ue == nullptr) {
@@ -591,6 +706,7 @@ cu_cp_impl::handle_ngap_handover_request(const ngap_handover_request& request)
       du_db.get_du_processor(ue->get_du_index()).get_f1ap_handler(),
       get_cu_cp_ue_removal_handler(),
       ue_mng,
+      cell_meas_mng,
       cfg.security.default_security_indication,
       logger);
 }
@@ -606,37 +722,24 @@ async_task<bool> cu_cp_impl::handle_new_handover_command(ue_index_t ue_index, by
   // Notify mobility manager metrics handler about the successful handover preparation.
   mobility_mng.get_metrics_handler().aggregate_successful_handover_preparation();
 
-  return launch_async([this,
-                       ue_index,
-                       command,
-                       ho_reconfig_pdu         = byte_buffer{},
-                       ue_context_mod_response = f1ap_ue_context_modification_response{},
-                       ue_context_mod_request =
-                           f1ap_ue_context_modification_request{}](coro_context<async_task<bool>>& ctx) mutable {
-    CORO_BEGIN(ctx);
-
-    if (ue_mng.find_du_ue(ue_index) == nullptr) {
-      CORO_EARLY_RETURN(false);
-    }
-
-    // Unpack Handover Command PDU at RRC, to get RRC Reconfig PDU.
-    ho_reconfig_pdu = ue_mng.find_du_ue(ue_index)->get_rrc_ue()->handle_rrc_handover_command(std::move(command));
-    if (ho_reconfig_pdu.empty()) {
-      logger.warning("ue={}: Could not unpack Handover Command PDU", ue_index);
-      CORO_EARLY_RETURN(false);
-    }
-
-    ue_context_mod_request.ue_index                 = ue_index;
-    ue_context_mod_request.drbs_to_be_released_list = ue_mng.find_du_ue(ue_index)->get_up_resource_manager().get_drbs();
-    ue_context_mod_request.rrc_container            = ho_reconfig_pdu.copy();
-
-    CORO_AWAIT_VALUE(ue_context_mod_response,
-                     du_db.get_du_processor(ue_mng.find_du_ue(ue_index)->get_du_index())
-                         .get_f1ap_handler()
-                         .handle_ue_context_modification_request(ue_context_mod_request));
-
-    CORO_RETURN(ue_context_mod_response.success);
-  });
+  cu_cp_ue* ue = ue_mng.find_du_ue(ue_index);
+  if (ue == nullptr) {
+    logger.warning("ue={}: UE not found for handover command handling", ue_index);
+    return launch_async([](coro_context<async_task<bool>>& ctx) {
+      CORO_BEGIN(ctx);
+      CORO_RETURN(false);
+    });
+  }
+  ngap_interface* ngap = ngap_db.find_ngap(ue->get_ue_context().plmn);
+  if (ngap == nullptr) {
+    logger.warning("ue={}: NGAP not found for PLMN={}", ue_index, ue->get_ue_context().plmn);
+    return launch_async([](coro_context<async_task<bool>>& ctx) {
+      CORO_BEGIN(ctx);
+      CORO_RETURN(false);
+    });
+  }
+  return start_inter_cu_handover_source_routine(
+      ue_index, std::move(command), ue_mng, du_db, cu_up_db, ngap->get_ngap_control_message_handler(), logger);
 }
 
 ue_index_t cu_cp_impl::handle_ue_index_allocation_request(const nr_cell_global_id_t& cgi)
@@ -690,40 +793,14 @@ void cu_cp_impl::handle_n2_disconnection(amf_index_t amf_index)
 
   logger.warning("Handling N2 disconnection. Lost PLMNs: {}", fmt::format("{}", fmt::join(plmns, " ")));
 
-  // Notify AMF connection manager about the disconnection.
-  controller->amf_connection_handler().handle_amf_connection_loss(amf_index);
-
-  // Stop accepting new UEs for the given PLMNs.
-  ue_mng.add_blocked_plmns(plmns);
-
-  // Release all UEs with the PLMNs served by the disconnected AMF.
-  for (const auto& plmn : plmns) {
-    std::vector<cu_cp_ue*> ues = ue_mng.find_ues(plmn);
-
-    for (const auto& ue : ues) {
-      if (ue != nullptr) {
-        logger.info("ue={}: Releasing UE (PLMN {}) due to N2 disconnection", ue->get_ue_index(), plmn);
-        ue->get_task_sched().schedule_async_task(launch_async(
-            [this,
-             command = cu_cp_ue_context_release_command{ue->get_ue_index(), ngap_cause_misc_t::hardware_fail, true}](
-                coro_context<async_task<void>>& ctx) {
-              CORO_BEGIN(ctx);
-              // The outcome of the procedure is ignored, as we don't send anything to the (lost) AMF.
-              CORO_AWAIT(handle_ue_context_release_command(command));
-              CORO_RETURN();
-            }));
-      }
-    }
-  }
-
-  // Try to reconnect to AMF.
-  controller->amf_connection_handler().reconnect_to_amf(amf_index, &ue_mng, cfg.ngap.amf_reconnection_retry_time);
+  common_task_sched.schedule_async_task(
+      launch_async<amf_connection_loss_routine>(amf_index, cfg, plmns, du_db, *this, ue_mng, controller, logger));
 }
 
 std::optional<rrc_meas_cfg>
-cu_cp_impl::handle_measurement_config_request(ue_index_t                  ue_index,
-                                              nr_cell_identity            nci,
-                                              std::optional<rrc_meas_cfg> current_meas_config)
+cu_cp_impl::handle_measurement_config_request(ue_index_t                         ue_index,
+                                              nr_cell_identity                   nci,
+                                              const std::optional<rrc_meas_cfg>& current_meas_config)
 {
   return cell_meas_mng.get_measurement_config(ue_index, nci, current_meas_config);
 }
@@ -748,17 +825,16 @@ cu_cp_impl::handle_intra_cu_handover_request(const cu_cp_intra_cu_handover_reque
 
   byte_buffer sib1 = du_db.get_du_processor(target_du_index).get_mobility_handler().get_packed_sib1(request.cgi);
 
-  return launch_async<intra_cu_handover_routine>(
-      request,
-      std::move(sib1),
-      cu_up_db.find_cu_up_processor(uint_to_cu_up_index(0))->get_e1ap_bearer_context_manager(),
-      du_db.get_du_processor(source_du_index).get_f1ap_handler(),
-      du_db.get_du_processor(target_du_index).get_f1ap_handler(),
-      *this,
-      get_cu_cp_ue_removal_handler(),
-      *this,
-      ue_mng,
-      logger);
+  return launch_async<intra_cu_handover_routine>(request,
+                                                 std::move(sib1),
+                                                 du_db.get_du_processor(source_du_index).get_f1ap_handler(),
+                                                 du_db.get_du_processor(target_du_index).get_f1ap_handler(),
+                                                 *this,
+                                                 get_cu_cp_ue_removal_handler(),
+                                                 *this,
+                                                 ue_mng,
+                                                 mobility_mng,
+                                                 logger);
 }
 
 async_task<void> cu_cp_impl::handle_ue_removal_request(ue_index_t ue_index)
@@ -816,6 +892,18 @@ void cu_cp_impl::handle_pending_ue_task_cancellation(ue_index_t ue_index)
   }
 }
 
+void cu_cp_impl::handle_amf_reconnection(amf_index_t amf_index)
+{
+  if (ngap_db.find_ngap(amf_index) == nullptr) {
+    logger.warning("AMF index={} not found", amf_index);
+    return;
+  }
+
+  std::vector<plmn_identity> served_plmns = ngap_db.find_ngap(amf_index)->get_ngap_context().get_supported_plmns();
+
+  common_task_sched.schedule_async_task(launch_async<cell_activation_routine>(cfg, served_plmns, du_db, logger));
+}
+
 void cu_cp_impl::initialize_handover_ue_release_timer(
     ue_index_t                              ue_index,
     std::chrono::milliseconds               handover_ue_release_timeout,
@@ -859,7 +947,7 @@ void cu_cp_impl::handle_rrc_ue_creation(ue_index_t ue_index, rrc_ue_interface& r
   // Connect cu-cp to rrc ue adapters.
   ue_mng.get_rrc_ue_cu_cp_adapter(ue_index).connect_cu_cp(get_cu_cp_rrc_ue_interface(),
                                                           get_cu_cp_ue_removal_handler(),
-                                                          *controller,
+                                                          controller,
                                                           ue->get_up_resource_manager(),
                                                           get_cu_cp_measurement_handler());
 }
@@ -871,7 +959,7 @@ byte_buffer cu_cp_impl::handle_target_cell_sib1_required(du_index_t du_index, nr
 
 async_task<void> cu_cp_impl::handle_transaction_info_loss(const f1_ue_transaction_info_loss_event& ev)
 {
-  return launch_async<ue_transaction_info_release_routine>(ev.ues_lost, ue_mng, *this);
+  return launch_async<ue_transaction_info_release_routine>(ev, ue_mng, ngap_db, *this, logger);
 }
 
 ngap_cu_cp_ue_notifier* cu_cp_impl::handle_new_ngap_ue(ue_index_t ue_index)

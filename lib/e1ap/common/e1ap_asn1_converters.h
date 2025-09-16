@@ -746,7 +746,7 @@ inline asn1::e1ap::t_reordering_e pdcp_t_reordering_to_asn1(pdcp_t_reordering t_
 /// \brief Converts type \c e1ap_pdcp_config to an E1AP ASN.1 type.
 /// \param pdcp_cfg pdcp config object.
 /// \return The E1AP ASN.1 object where the result of the conversion is stored.
-inline asn1::e1ap::pdcp_cfg_s pdcp_config_to_e1ap_asn1(e1ap_pdcp_config pdcp_cfg)
+inline asn1::e1ap::pdcp_cfg_s pdcp_config_to_e1ap_asn1(const e1ap_pdcp_config& pdcp_cfg)
 {
   asn1::e1ap::pdcp_cfg_s asn1_pdcp_cfg;
 
@@ -864,7 +864,7 @@ inline asn1::e1ap::pdcp_cfg_s pdcp_config_to_e1ap_asn1(e1ap_pdcp_config pdcp_cfg
 /// \brief Converts E1AP ASN.1 type to an \c e1ap_pdcp_config type.
 /// \param asn1_pdcp_cfg E1AP ASN.1 object.
 /// \return The pdcp config object where the result of the conversion is stored.
-inline e1ap_pdcp_config e1ap_asn1_to_pdcp_config(asn1::e1ap::pdcp_cfg_s asn1_pdcp_cfg)
+inline e1ap_pdcp_config e1ap_asn1_to_pdcp_config(const asn1::e1ap::pdcp_cfg_s& asn1_pdcp_cfg)
 {
   e1ap_pdcp_config pdcp_cfg;
 
@@ -1198,9 +1198,9 @@ inline void e1ap_asn1_to_flow_map_info(slotted_id_vector<qos_flow_id_t, e1ap_qos
     }
 
     // Fill paging policy indication.
-    if (asn1_flow_map_item.qos_flow_level_qos_params.paging_policy_ind_present) {
+    if (asn1_flow_map_item.qos_flow_level_qos_params.paging_policy_idx_present) {
       flow_map_item.qos_flow_level_qos_params.paging_policy_ind =
-          asn1_flow_map_item.qos_flow_level_qos_params.paging_policy_ind;
+          asn1_flow_map_item.qos_flow_level_qos_params.paging_policy_idx;
     }
 
     // Fill reflective QoS indication.
@@ -1459,6 +1459,33 @@ inline void asn1_to_security_indication(security_indication_t& security_ind, con
     default:
       srslog::fetch_basic_logger("E1AP").error("Cannot convert security indication to E1AP type");
   }
+}
+
+/// \brief Converts ASN.1 PDU session type to \c pdu_session_type_t.
+/// \param[out] pdu_session_type The common type PDU session type.
+/// \param[in] ans1_pdu_session_type The ASN.1 PDU session type.
+/// \return True if the conversion was successful, false otherwise.
+inline bool asn1_to_pdu_session_type(pdu_session_type_t&                   pdu_session_type,
+                                     const asn1::e1ap::pdu_session_type_e& ans1_pdu_session_type)
+{
+  switch (ans1_pdu_session_type) {
+    case asn1::e1ap::pdu_session_type_e::pdu_session_type_opts::ipv4:
+      pdu_session_type = pdu_session_type_t::ipv4;
+      break;
+    case asn1::e1ap::pdu_session_type_e::pdu_session_type_opts::ipv6:
+      pdu_session_type = pdu_session_type_t::ipv6;
+      break;
+    case asn1::e1ap::pdu_session_type_e::pdu_session_type_opts::ipv4v6:
+      pdu_session_type = pdu_session_type_t::ipv4v6;
+      break;
+    case asn1::e1ap::pdu_session_type_e::pdu_session_type_opts::ethernet:
+      pdu_session_type = pdu_session_type_t::ethernet;
+      break;
+    default:
+      srslog::fetch_basic_logger("E1AP").warning("Cannot convert ASN.1 PDU session type to common type");
+      return false;
+  }
+  return true;
 }
 
 } // namespace srsran

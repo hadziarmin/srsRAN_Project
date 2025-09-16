@@ -98,6 +98,8 @@ struct sector_configuration {
   bool ignore_ecpri_seq_id_field = false;
   /// If set to true, metrics are enabled in the sector.
   bool are_metrics_enabled = false;
+  /// If set to true, logs late events as warnings, otherwise as info.
+  bool enable_log_warnings_for_lates = true;
   /// Warn of unreceived Radio Unit frames status.
   warn_unreceived_ru_frames log_unreceived_ru_frames = warn_unreceived_ru_frames::after_traffic_detection;
   /// Uplink compression parameters.
@@ -112,6 +114,8 @@ struct sector_configuration {
   bool is_uplink_static_compr_hdr_enabled = true;
   /// IQ data scaling to be applied prior to Downlink data compression.
   float iq_scaling;
+  /// C-Plane PRACH FFT size (to be used in Type 3 messages).
+  ofh::cplane_fft_size c_plane_prach_fft_len = ofh::cplane_fft_size::fft_4096;
   /// \brief Number of slots the timing handler is notified in advance of the transmission time.
   ///
   /// Sets the maximum allowed processing delay in slots.

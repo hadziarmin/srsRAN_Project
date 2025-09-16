@@ -59,6 +59,14 @@ void si_message_scheduler::run_slot(cell_slot_resource_allocator& res_grid)
   schedule_pending_si_messages(res_grid);
 }
 
+void si_message_scheduler::stop()
+{
+  // Clear all windows.
+  for (unsigned i = 0; i != pending_messages.size(); ++i) {
+    pending_messages[i] = {};
+  }
+}
+
 void si_message_scheduler::handle_si_message_update_indication(
     unsigned                                   new_version,
     const std::optional<si_scheduling_config>& new_si_sched_cfg)
@@ -87,7 +95,7 @@ void si_message_scheduler::update_si_message_windows(slot_point sl_tx)
 
     if (not pending_messages[i].window.empty()) {
       // SI message is already in the window. Check for window end.
-      if (pending_messages[i].window.stop() < sl_tx) {
+      if (pending_messages[i].window.stop() <= sl_tx) {
         if (pending_messages[i].nof_tx_in_current_window == 0) {
           logger.warning("SI message {} window ended, but no transmissions were made.", i);
         }
@@ -138,8 +146,8 @@ void si_message_scheduler::schedule_pending_si_messages(cell_slot_resource_alloc
   for (unsigned i = 0; i != pending_messages.size(); ++i) {
     message_window_context& si_ctxt = pending_messages[i];
 
-    if (si_ctxt.window.empty()) {
-      // SI window is inactive.
+    if (si_ctxt.window.empty() or si_ctxt.nof_tx_in_current_window > 0) {
+      // SI window is inactive or SI message was already transmitted.
       continue;
     }
 

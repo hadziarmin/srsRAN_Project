@@ -94,7 +94,7 @@ auto dispatch_and_continue_on_blocking(DispatchTaskExecutor& dispatch_exec,
 {
   if constexpr (std::is_invocable_v<Callable>) {
     // The task is a callable object.
-    using return_type = function_return_t<decltype(&Callable::operator())>;
+    using return_type = std::invoke_result_t<Callable>;
 
     if constexpr (std::is_same_v<return_type, void>) {
       // CASE: callable has the signature void().
@@ -200,7 +200,8 @@ auto dispatch_and_continue_on_blocking(DispatchTaskExecutor& dispatch_exec,
 /// \param[in] timers Timer service used to handle reattempts to dispatch task to new execution context.
 /// \param[in] on_failure Callback invoked in case the dispatch to executor fails at first attempt.
 template <typename TaskExecutor, typename OnFailureToDispatch = noop_operation>
-auto execute_on_blocking(TaskExecutor& exec, timer_manager& timers, OnFailureToDispatch&& on_failure = noop_operation{})
+[[nodiscard]] auto
+execute_on_blocking(TaskExecutor& exec, timer_manager& timers, OnFailureToDispatch&& on_failure = noop_operation{})
 {
   return detail::dispatch_on_blocking<true, TaskExecutor, OnFailureToDispatch>(
       exec, timers, std::forward<OnFailureToDispatch>(on_failure));
@@ -212,7 +213,8 @@ auto execute_on_blocking(TaskExecutor& exec, timer_manager& timers, OnFailureToD
 /// \param[in] timers Timer service used to handle reattempts to dispatch task to new execution context.
 /// \param[in] on_failure Callback invoked in case the dispatch to executor fails at first attempt.
 template <typename TaskExecutor, typename OnFailureToDispatch = noop_operation>
-auto defer_on_blocking(TaskExecutor& exec, timer_manager& timers, OnFailureToDispatch&& on_failure = noop_operation{})
+[[nodiscard]] auto
+defer_on_blocking(TaskExecutor& exec, timer_manager& timers, OnFailureToDispatch&& on_failure = noop_operation{})
 {
   return detail::dispatch_on_blocking<false, TaskExecutor, OnFailureToDispatch>(
       exec, timers, std::forward<OnFailureToDispatch>(on_failure));

@@ -28,6 +28,7 @@
 #include "srsran/ran/sch/sch_mcs.h"
 #include "srsran/ran/slot_point.h"
 #include "srsran/support/math/stats.h"
+#include "srsran/support/zero_copy_notifier.h"
 #include <optional>
 
 namespace srsran {
@@ -151,6 +152,20 @@ struct scheduler_cell_metrics {
   unsigned nof_failed_pdcch_allocs = 0;
   /// Number of failed UCI allocation attempts.
   unsigned nof_failed_uci_allocs = 0;
+  /// Number of MSG3s.
+  unsigned nof_msg3_ok = 0;
+  /// Number of MSG3 KOs.
+  unsigned nof_msg3_nok = 0;
+  /// Average PRACH delay in ms.
+  std::optional<float> avg_prach_delay_ms;
+  /// Number of failed PDSCH allocations due to late HARQs.
+  unsigned nof_failed_pdsch_allocs_late_harqs = 0;
+  /// Number of failed PUSCH allocations due to late HARQs.
+  unsigned nof_failed_pusch_allocs_late_harqs = 0;
+  /// Number of UE events not reported because the maximum number of events was reached.
+  unsigned nof_filtered_events = 0;
+  /// Average number of RBs used for PUCCH per UL slot.
+  float pucch_tot_rb_usage_avg = 0.0f;
 
   unsigned                                nof_error_indications = 0;
   std::chrono::microseconds               average_decision_latency{0};
@@ -174,6 +189,14 @@ public:
 
   /// \brief This method will be called periodically by the scheduler to report the latest UE metrics statistics.
   virtual void report_metrics(const scheduler_cell_metrics& report) = 0;
+};
+
+/// Interface used by the scheduler to determine whether a new metric report is required.
+class scheduler_cell_metrics_notifier : public zero_copy_notifier<scheduler_cell_metrics>
+{
+public:
+  /// Check whether a new metric report is required given the current slot.
+  virtual bool is_sched_report_required(slot_point sl_tx) const = 0;
 };
 
 } // namespace srsran

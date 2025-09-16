@@ -53,8 +53,8 @@ public:
   bool has_cell(du_cell_index_t cell_index) const;
 
   /// Adds new cell configuration to MAC DL.
-  mac_cell_controller& add_cell(const mac_cell_creation_request&     cell_cfg,
-                                const mac_cell_metric_report_config& metrics_cfg) override;
+  mac_cell_controller& add_cell(const mac_cell_creation_request& cell_cfg,
+                                mac_cell_config_dependencies     dependencies) override;
 
   /// Removes cell configuration from MAC DL.
   void remove_cell(du_cell_index_t cell_index) override;
@@ -73,9 +73,9 @@ public:
   async_task<void> remove_ue(const mac_ue_delete_request& request) override;
 
   /// Add/Modify UE bearers in the MUX.
-  async_task<bool> addmod_bearers(du_ue_index_t                                  ue_index,
-                                  du_cell_index_t                                pcell_index,
-                                  const std::vector<mac_logical_channel_config>& logical_channels) override;
+  async_task<bool> addmod_bearers(du_ue_index_t                          ue_index,
+                                  du_cell_index_t                        pcell_index,
+                                  span<const mac_logical_channel_config> logical_channels) override;
 
   /// Add/Modify UE bearers in the DEMUX.
   async_task<bool>

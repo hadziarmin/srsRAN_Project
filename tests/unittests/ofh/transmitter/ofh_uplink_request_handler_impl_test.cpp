@@ -51,7 +51,7 @@ class uplane_rx_symbol_notifier_spy : public uplane_rx_symbol_notifier
   const resource_grid_reader* rg_reader = nullptr;
 
 public:
-  void on_new_uplink_symbol(const uplane_rx_symbol_context& context, shared_resource_grid grid) override
+  void on_new_uplink_symbol(const uplane_rx_symbol_context& context, shared_resource_grid grid, bool is_valid) override
   {
     rg_reader = &(grid.get_reader());
   }
@@ -91,8 +91,9 @@ public:
 /// Error notifier spy implementation.
 class error_notifier_spy : public error_notifier
 {
-  bool dl_late = false;
-  bool ul_late = false;
+  bool dl_late    = false;
+  bool ul_late    = false;
+  bool prach_late = false;
 
 public:
   // See interface for documentation.
@@ -101,8 +102,12 @@ public:
   // See interface for documentation.
   void on_late_uplink_message(const error_context& context) override { ul_late = true; }
 
+  // See interface for documentation.
+  void on_late_prach_message(const error_context& context) override { prach_late = true; }
+
   bool is_downlink_late() const { return dl_late; }
   bool is_uplink_late() const { return ul_late; }
+  bool is_prach_late() const { return prach_late; }
 };
 
 class ofh_uplink_request_handler_impl_fixture : public ::testing::Test
@@ -152,7 +157,11 @@ protected:
             ul_prach_repo,
             notified_symbol_repo,
             std::move(temp),
-            std::make_shared<ether::eth_frame_pool>(mtu_size, 2)};
+            std::make_shared<ether::eth_frame_pool>(srslog::fetch_basic_logger("TEST"),
+                                                    mtu_size,
+                                                    2,
+                                                    ofh::message_type::control_plane,
+                                                    ofh::data_direction::uplink)};
   }
 
   uplink_request_handler_impl_dependencies get_dependencies_prach_cp_enabled()
@@ -166,7 +175,11 @@ protected:
             ul_prach_repo,
             notified_symbol_repo,
             std::move(temp),
-            std::make_shared<ether::eth_frame_pool>(mtu_size, 2)};
+            std::make_shared<ether::eth_frame_pool>(srslog::fetch_basic_logger("TEST"),
+                                                    mtu_size,
+                                                    2,
+                                                    ofh::message_type::control_plane,
+                                                    ofh::data_direction::uplink)};
   }
 
   uplink_request_handler_impl_config get_config_prach_cp_disabled()
@@ -179,8 +192,9 @@ protected:
     config.cp                  = cyclic_prefix::NORMAL;
     config.scs                 = subcarrier_spacing::kHz30;
     config.tdd_config.emplace(ttd_pattern);
-    config.ul_processing_time = ul_processing_time;
-    config.tx_timing_params   = tx_timing_params;
+    config.ul_processing_time            = ul_processing_time;
+    config.tx_timing_params              = tx_timing_params;
+    config.enable_log_warnings_for_lates = true;
 
     return config;
   }
@@ -188,14 +202,15 @@ protected:
   uplink_request_handler_impl_config get_config_prach_cp_enabled()
   {
     uplink_request_handler_impl_config config;
-    config.sector              = 0;
-    config.prach_eaxc          = prach_eaxc;
-    config.ul_data_eaxc        = {};
-    config.is_prach_cp_enabled = true;
-    config.cp                  = cyclic_prefix::NORMAL;
-    config.scs                 = subcarrier_spacing::kHz30;
-    config.ul_processing_time  = ul_processing_time;
-    config.tx_timing_params    = tx_timing_params;
+    config.sector                        = 0;
+    config.prach_eaxc                    = prach_eaxc;
+    config.ul_data_eaxc                  = {};
+    config.is_prach_cp_enabled           = true;
+    config.cp                            = cyclic_prefix::NORMAL;
+    config.scs                           = subcarrier_spacing::kHz30;
+    config.ul_processing_time            = ul_processing_time;
+    config.tx_timing_params              = tx_timing_params;
+    config.enable_log_warnings_for_lates = true;
 
     return config;
   }
@@ -222,12 +237,14 @@ TEST_F(ofh_uplink_request_handler_impl_fixture,
   handler.get_ota_symbol_boundary_notifier().on_new_symbol({ota_time, {}});
 
   handler.handle_prach_occasion(context, buffer_dummy);
+  ul_prach_repo->process_pending_contexts();
 
   // Assert data flow.
   ASSERT_FALSE(data_flow->has_enqueue_section_type_1_method_been_called());
   ASSERT_FALSE(data_flow->has_enqueue_section_type_3_method_been_called());
   ASSERT_FALSE(notifier_spy.is_downlink_late());
   ASSERT_FALSE(notifier_spy.is_uplink_late());
+  ASSERT_FALSE(notifier_spy.is_prach_late());
 }
 
 TEST_F(ofh_uplink_request_handler_impl_fixture, handle_prach_request_generates_cplane_message)
@@ -249,6 +266,7 @@ TEST_F(ofh_uplink_request_handler_impl_fixture, handle_prach_request_generates_c
   handler_prach_cp_en.get_ota_symbol_boundary_notifier().on_new_symbol({ota_time, {}});
 
   handler_prach_cp_en.handle_prach_occasion(context, buffer_dummy);
+  ul_prach_repo->process_pending_contexts();
 
   // Assert data flow.
   ASSERT_FALSE(data_flow_prach->has_enqueue_section_type_1_method_been_called());
@@ -261,6 +279,7 @@ TEST_F(ofh_uplink_request_handler_impl_fixture, handle_prach_request_generates_c
   ASSERT_EQ(filter_index_type::ul_prach_preamble_short, info.filter_type);
   ASSERT_FALSE(notifier_spy.is_downlink_late());
   ASSERT_FALSE(notifier_spy.is_uplink_late());
+  ASSERT_FALSE(notifier_spy.is_prach_late());
 }
 
 TEST_F(ofh_uplink_request_handler_impl_fixture, handle_late_prach_request_does_not_generate_cplane_message)
@@ -282,13 +301,16 @@ TEST_F(ofh_uplink_request_handler_impl_fixture, handle_late_prach_request_does_n
   handler_prach_cp_en.get_ota_symbol_boundary_notifier().on_new_symbol({ota_time, {}});
 
   handler_prach_cp_en.handle_prach_occasion(context, buffer_dummy);
+  ul_prach_repo->process_pending_contexts();
 
   // Assert data flow.
   ASSERT_FALSE(data_flow_prach->has_enqueue_section_type_1_method_been_called());
   ASSERT_FALSE(data_flow_prach->has_enqueue_section_type_3_method_been_called());
   ASSERT_TRUE(ul_prach_repo->get(context.slot).empty());
   ASSERT_FALSE(notifier_spy.is_downlink_late());
-  ASSERT_TRUE(notifier_spy.is_uplink_late());
+  ASSERT_FALSE(notifier_spy.is_downlink_late());
+  ASSERT_FALSE(notifier_spy.is_uplink_late());
+  ASSERT_TRUE(notifier_spy.is_prach_late());
 }
 
 TEST_F(ofh_uplink_request_handler_impl_fixture, handle_uplink_slot_generates_cplane_message)
@@ -305,6 +327,7 @@ TEST_F(ofh_uplink_request_handler_impl_fixture, handle_uplink_slot_generates_cpl
   handler.get_ota_symbol_boundary_notifier().on_new_symbol({ota_time, {}});
 
   handler.handle_new_uplink_slot(rg_context, shared_grid.get_grid());
+  ul_slot_repo->process_pending_contexts();
 
   // Assert data flow.
   ASSERT_TRUE(data_flow->has_enqueue_section_type_1_method_been_called());
@@ -323,6 +346,7 @@ TEST_F(ofh_uplink_request_handler_impl_fixture, handle_uplink_slot_generates_cpl
   ASSERT_EQ(writer_spy.get_nof_symbols(), symbol_range.stop());
   ASSERT_FALSE(notifier_spy.is_downlink_late());
   ASSERT_FALSE(notifier_spy.is_uplink_late());
+  ASSERT_FALSE(notifier_spy.is_prach_late());
 }
 
 TEST_F(ofh_uplink_request_handler_impl_fixture, handle_late_uplink_request_does_not_generates_cplane_message)
@@ -336,11 +360,13 @@ TEST_F(ofh_uplink_request_handler_impl_fixture, handle_late_uplink_request_does_
   handler.get_ota_symbol_boundary_notifier().on_new_symbol({ota_time, {}});
 
   handler.handle_new_uplink_slot(rg_context, shared_grid.get_grid());
+  ul_slot_repo->process_pending_contexts();
 
   // Assert data flow.
   ASSERT_FALSE(data_flow->has_enqueue_section_type_1_method_been_called());
   ASSERT_FALSE(notifier_spy.is_downlink_late());
   ASSERT_TRUE(notifier_spy.is_uplink_late());
+  ASSERT_FALSE(notifier_spy.is_prach_late());
 }
 
 TEST_F(ofh_uplink_request_handler_impl_fixture,
@@ -359,6 +385,7 @@ TEST_F(ofh_uplink_request_handler_impl_fixture,
   handler.get_ota_symbol_boundary_notifier().on_new_symbol({ota_time, {}});
 
   handler.handle_new_uplink_slot(rg_context, shared_grid.get_grid());
+  ul_slot_repo->process_pending_contexts();
 
   // Assert data flow.
   ASSERT_TRUE(data_flow->has_enqueue_section_type_1_method_been_called());

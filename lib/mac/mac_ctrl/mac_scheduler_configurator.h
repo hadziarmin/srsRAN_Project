@@ -28,11 +28,12 @@
 namespace srsran {
 
 struct mac_cell_creation_request;
+class scheduler_cell_metrics_notifier;
 
 struct mac_scheduler_cell_creation_request {
   const mac_cell_creation_request& cell_params;
   std::chrono::milliseconds        metric_report_period;
-  scheduler_metrics_notifier*      metric_notifier;
+  scheduler_cell_metrics_notifier* metric_notifier;
 };
 
 /// \brief Adapter interface between MAC and scheduler that allows the srsGNB MAC to configure different scheduler
@@ -67,7 +68,7 @@ public:
 
   /// \brief Removes UE from MAC scheduler in an asynchronous manner.
   /// The scheduler shouldn't allocate more grants directed at the UE being removed after this procedure is complete.
-  virtual async_task<bool> handle_ue_removal_request(const mac_ue_delete_request& msg) = 0;
+  virtual async_task<void> handle_ue_removal_request(const mac_ue_delete_request& msg) = 0;
 
   /// Handle the confirmation that the UE received and applied the last sent RRC configuration.
   virtual void handle_ue_config_applied(du_ue_index_t ue_index) = 0;

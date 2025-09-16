@@ -28,8 +28,8 @@
 #include "nzp_csi_rs_generator_impl.h"
 #include "nzp_csi_rs_generator_pool.h"
 #include "port_channel_estimator_average_impl.h"
+#include "port_channel_estimator_pool.h"
 #include "pss_processor_impl.h"
-#include "pucch/dmrs_pucch_estimator_format1.h"
 #include "pucch/dmrs_pucch_estimator_format2.h"
 #include "pucch/dmrs_pucch_estimator_formats3_4.h"
 #include "pucch/dmrs_pucch_estimator_impl.h"
@@ -38,6 +38,7 @@
 #include "srsran/phy/support/support_formatters.h"
 #include "srsran/phy/support/time_alignment_estimator/time_alignment_estimator_factories.h"
 #include "srsran/phy/upper/signal_processors/signal_processor_formatters.h"
+#include <map>
 
 using namespace srsran;
 
@@ -70,7 +71,7 @@ private:
 public:
   explicit dmrs_pdcch_processor_sw_factory(std::shared_ptr<pseudo_random_generator_factory> prg_factory_,
                                            std::shared_ptr<resource_grid_mapper_factory>    rg_mapper_factory_) :
-    prg_factory(std::move(prg_factory_)), rg_mapper_factory(rg_mapper_factory_)
+    prg_factory(std::move(prg_factory_)), rg_mapper_factory(std::move(rg_mapper_factory_))
   {
     srsran_assert(prg_factory, "Invalid PRG factory.");
   }
@@ -122,21 +123,6 @@ public:
 
   std::unique_ptr<dmrs_pucch_estimator> create() override
   {
-    // Prepare DM-RS for PUCCH Format 1 low PAPR sequence parameters.
-    unsigned               m     = 1;
-    unsigned               delta = 0;
-    std::array<float, NRE> alphas;
-    std::generate(alphas.begin(), alphas.end(), [&, n = 0]() mutable {
-      return TWOPI * static_cast<float>(n++) / static_cast<float>(NRE);
-    });
-
-    std::unique_ptr<dmrs_pucch_estimator_format1> estimator_format1 = std::make_unique<dmrs_pucch_estimator_format1>(
-        prg_factory->create(),
-        lpc_factory->create(m, delta, alphas),
-        ch_estimator_factory->create(port_channel_estimator_fd_smoothing_strategy::mean,
-                                     port_channel_estimator_td_interpolation_strategy::average,
-                                     /*compensate_cfo =*/false));
-
     std::unique_ptr<dmrs_pucch_estimator_format2> estimator_format2 = std::make_unique<dmrs_pucch_estimator_format2>(
         prg_factory->create(),
         ch_estimator_factory->create(port_channel_estimator_fd_smoothing_strategy::filter,
@@ -147,12 +133,11 @@ public:
         std::make_unique<dmrs_pucch_estimator_formats3_4>(
             prg_factory->create(),
             lpg_factory->create(),
-            ch_estimator_factory->create(port_channel_estimator_fd_smoothing_strategy::mean,
+            ch_estimator_factory->create(port_channel_estimator_fd_smoothing_strategy::filter,
                                          port_channel_estimator_td_interpolation_strategy::average,
                                          /*compensate_cfo =*/false));
 
-    return std::make_unique<dmrs_pucch_estimator_impl>(
-        std::move(estimator_format1), std::move(estimator_format2), std::move(estimator_formats3_4));
+    return std::make_unique<dmrs_pucch_estimator_impl>(std::move(estimator_format2), std::move(estimator_formats3_4));
   }
 
 private:
@@ -244,7 +229,7 @@ public:
         processor = factory->create();
       }
 
-      generators = std::make_shared<nzp_csi_rs_generator_pool::generator_pool_type>(std::move(instances));
+      generators = std::make_shared<nzp_csi_rs_generator_pool::generator_pool_type>(instances);
     }
 
     return std::make_unique<nzp_csi_rs_generator_pool>(generators);
@@ -254,12 +239,8 @@ public:
   {
     if (!generators) {
       std::vector<std::unique_ptr<nzp_csi_rs_generator>> instances(nof_concurrent_threads);
-
-      for (auto& processor : instances) {
-        processor = factory->create(logger);
-      }
-
-      generators = std::make_shared<nzp_csi_rs_generator_pool::generator_pool_type>(std::move(instances));
+      std::generate(instances.begin(), instances.end(), [this, &logger]() { return factory->create(logger); });
+      generators = std::make_shared<nzp_csi_rs_generator_pool::generator_pool_type>(instances);
     }
 
     return std::make_unique<nzp_csi_rs_generator_pool>(generators);
@@ -301,6 +282,56 @@ public:
 
 private:
   std::shared_ptr<time_alignment_estimator_factory> ta_estimator_factory;
+};
+
+class port_channel_estimator_pool_factory : public port_channel_estimator_factory
+{
+public:
+  port_channel_estimator_pool_factory(std::shared_ptr<port_channel_estimator_factory> factory_,
+                                      unsigned                                        nof_concurrent_threads_) :
+    factory(std::move(factory_)), nof_concurrent_threads(nof_concurrent_threads_)
+  {
+    srsran_assert(factory, "Invalid port channel estimator factory.");
+    srsran_assert(nof_concurrent_threads > 1, "Number of concurrent threads must be greater than one.");
+  }
+
+  std::unique_ptr<port_channel_estimator>
+  create(port_channel_estimator_fd_smoothing_strategy     fd_smoothing_strategy,
+         port_channel_estimator_td_interpolation_strategy td_interpolation_strategy,
+         bool                                             compensate_cfo) override
+  {
+    auto& this_estimator_pool = estimators[{fd_smoothing_strategy, td_interpolation_strategy, compensate_cfo}];
+    if (!this_estimator_pool) {
+      std::vector<std::unique_ptr<port_channel_estimator>> instances(nof_concurrent_threads);
+      std::generate(instances.begin(),
+                    instances.end(),
+                    [this, fd_smoothing_strategy, td_interpolation_strategy, compensate_cfo]() {
+                      return factory->create(fd_smoothing_strategy, td_interpolation_strategy, compensate_cfo);
+                    });
+      this_estimator_pool = std::make_shared<port_channel_estimator_pool::estimator_pool>(instances);
+    }
+    return std::make_unique<port_channel_estimator_pool>(this_estimator_pool);
+  }
+
+private:
+  using estimator_config =
+      std::tuple<port_channel_estimator_fd_smoothing_strategy, port_channel_estimator_td_interpolation_strategy, bool>;
+
+  struct config_hash {
+    size_t operator()(const estimator_config& c) const noexcept
+    {
+      size_t h1 = std::hash<int>{}(static_cast<int>(std::get<0>(c)));
+      size_t h2 = std::hash<int>{}(static_cast<int>(std::get<1>(c)));
+      size_t h3 = std::hash<bool>{}(std::get<2>(c));
+
+      return (h1 ^ (h2 << 1) ^ (h3 << 2));
+    }
+  };
+
+  std::shared_ptr<port_channel_estimator_factory> factory;
+  unsigned                                        nof_concurrent_threads;
+  std::unordered_map<estimator_config, std::shared_ptr<port_channel_estimator_pool::estimator_pool>, config_hash>
+      estimators;
 };
 
 class pss_processor_factory_sw : public pss_processor_factory
@@ -380,6 +411,13 @@ std::shared_ptr<port_channel_estimator_factory>
 srsran::create_port_channel_estimator_factory_sw(std::shared_ptr<time_alignment_estimator_factory> ta_estimator_factory)
 {
   return std::make_shared<port_channel_estimator_factory_sw>(std::move(ta_estimator_factory));
+}
+
+std::shared_ptr<port_channel_estimator_factory>
+srsran::create_port_channel_estimator_pool_factory(std::shared_ptr<port_channel_estimator_factory> ch_est_factory,
+                                                   unsigned nof_concurrent_threads)
+{
+  return std::make_shared<port_channel_estimator_pool_factory>(std::move(ch_est_factory), nof_concurrent_threads);
 }
 
 std::shared_ptr<pss_processor_factory> srsran::create_pss_processor_factory_sw()

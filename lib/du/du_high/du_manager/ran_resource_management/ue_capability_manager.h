@@ -46,6 +46,9 @@ expected<ue_capability_summary, std::string> decode_ue_nr_cap_container(const by
 /// Helper function to convert advanced UE NR capabilities.
 void decode_advanced_ue_nr_caps(ue_capability_summary& ue_capability, const asn1::rrc_nr::ue_nr_cap_s& ue_cap);
 
+/// Helper function to convert advanced UE NR capabilities.
+void decode_advanced_ue_nr_ntn_caps(ue_capability_summary& ue_capability, const asn1::rrc_nr::ue_nr_cap_s& ue_cap);
+
 /// Entity responsible for handling the UE RAT capabilities container, passed by the CU-CP, and updating the UE
 /// configuration in the DU accordingly.
 class ue_capability_manager
@@ -90,6 +93,8 @@ private:
 
   pdsch_mcs_table select_pdsch_mcs_table(du_cell_index_t cell_idx) const;
   pusch_mcs_table select_pusch_mcs_table(du_cell_index_t cell_idx) const;
+
+  vrb_to_prb::mapping_type select_pdsch_interleaving(du_cell_index_t cell_idx) const;
 
   /// Selects the PUSCH transmission codebook subset.
   tx_scheme_codebook_subset select_tx_codebook_subset(du_cell_index_t cell_idx) const;

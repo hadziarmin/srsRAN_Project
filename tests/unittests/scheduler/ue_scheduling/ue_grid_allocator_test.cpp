@@ -27,17 +27,19 @@
 #include "lib/scheduler/pdcch_scheduling/pdcch_resource_allocator_impl.h"
 #include "lib/scheduler/pucch_scheduling/pucch_allocator_impl.h"
 #include "lib/scheduler/slicing/ran_slice_instance.h"
+#include "lib/scheduler/support/bwp_helpers.h"
 #include "lib/scheduler/uci_scheduling/uci_allocator_impl.h"
 #include "lib/scheduler/ue_context/ue.h"
 #include "lib/scheduler/ue_scheduling/ue_cell_grid_allocator.h"
 #include "tests/test_doubles/scheduler/scheduler_config_helper.h"
+#include "tests/test_doubles/scheduler/scheduler_result_test.h"
+#include "srsran/adt/unique_function.h"
 #include "srsran/ran/du_types.h"
 #include "srsran/ran/duplex_mode.h"
 #include "srsran/ran/pdcch/search_space.h"
 #include "srsran/scheduler/config/logical_channel_config_factory.h"
 #include "srsran/scheduler/config/scheduler_expert_config_factory.h"
 #include <gtest/gtest.h>
-#include <tests/test_doubles/scheduler/scheduler_result_test.h>
 
 using namespace srsran;
 
@@ -92,13 +94,17 @@ protected:
 
     // Prepare CRB bitmask that will be used to find available CRBs.
     const auto& init_dl_bwp = cell_cfg.dl_cfg_common.init_dl_bwp;
-    // TODO: enable interleaving.
-    used_dl_vrbs = res_grid[0]
-                       .dl_res_grid
-                       .used_prbs(init_dl_bwp.generic_params.scs,
-                                  init_dl_bwp.generic_params.crbs,
-                                  init_dl_bwp.pdsch_common.pdsch_td_alloc_list[0].symbols)
-                       .convert_to<vrb_bitmap>();
+    const auto  prb_lims    = crb_to_prb(init_dl_bwp.generic_params.crbs,
+                                     cell_cfg.expert_cfg.ue.pdsch_crb_limits & init_dl_bwp.generic_params.crbs);
+    auto        used_prbs   = res_grid[0].dl_res_grid.used_prbs(init_dl_bwp.generic_params.scs,
+                                                       init_dl_bwp.generic_params.crbs,
+                                                       init_dl_bwp.pdsch_common.pdsch_td_alloc_list[0].symbols);
+    if (not prb_lims.empty()) {
+      used_prbs.fill(0, prb_lims.start());
+      used_prbs.fill(prb_lims.stop(), used_prbs.size());
+    }
+    // Note: VRB-to-PRB interleaving is not supported in this test.
+    used_dl_vrbs = used_prbs.convert_to<vrb_bitmap>();
 
     on_each_slot();
 
@@ -154,10 +160,12 @@ protected:
 
   void allocate_dl_newtx_grant(const slice_ue&         user,
                                unsigned                pending_bytes,
+                               bool                    interleaving_enabled,
                                std::optional<unsigned> max_nof_rbs = std::nullopt)
   {
     const auto& init_dl_bwp = cell_cfg.dl_cfg_common.init_dl_bwp;
-    auto        result      = alloc.allocate_dl_grant(ue_newtx_dl_grant_request{user, current_slot, pending_bytes});
+    auto        result =
+        alloc.allocate_dl_grant(ue_newtx_dl_grant_request{user, current_slot, pending_bytes, interleaving_enabled});
     if (not result.has_value()) {
       return;
     }
@@ -166,11 +174,11 @@ protected:
     vrb_interval vrbs = builder.recommended_vrbs(used_dl_vrbs);
 
     // Compute the corresponding CRBs.
-    // TODO: support interleaving.
+    // Note: VRB-to-PRB interleaving is not supported in this test.
     std::pair<crb_interval, crb_interval> crbs = {
-        prb_to_crb(init_dl_bwp.generic_params.crbs, static_cast<prb_interval>(vrbs)), {}};
+        prb_to_crb(init_dl_bwp.generic_params.crbs, vrbs.convert_to<prb_interval>()), {}};
 
-    builder.set_pdsch_params(vrbs, crbs);
+    builder.set_pdsch_params(vrbs, crbs, interleaving_enabled);
     used_dl_vrbs.fill(vrbs.start(), vrbs.stop());
   }
 
@@ -201,13 +209,13 @@ protected:
     }
     auto& builder = result.value();
 
-    // TODO: perform inverse VRB-to-PRB mapping when interleaving is enabled for this slice/BWP.
-    vrb_bitmap used_ul_vrbs = res_grid[pusch_slot]
-                                  .ul_res_grid
-                                  .used_prbs(init_ul_bwp.generic_params.scs,
-                                             init_ul_bwp.generic_params.crbs,
-                                             init_ul_bwp.pusch_cfg_common->pusch_td_alloc_list[0].symbols)
-                                  .convert_to<vrb_bitmap>();
+    // Note: VRB-to-PRB interleaving is not supported in this test.
+    auto used_ul_vrbs = res_grid[pusch_slot]
+                            .ul_res_grid
+                            .used_prbs(init_ul_bwp.generic_params.scs,
+                                       init_ul_bwp.generic_params.crbs,
+                                       init_ul_bwp.pusch_cfg_common->pusch_td_alloc_list[0].symbols)
+                            .convert_to<vrb_bitmap>();
     vrb_interval vrbs = builder.recommended_vrbs(used_ul_vrbs, max_nof_rbs.value_or(MAX_NOF_PRBS));
     builder.set_pusch_params(vrbs);
     used_ul_vrbs.fill(vrbs.start(), vrbs.stop());
@@ -268,9 +276,11 @@ TEST_P(ue_grid_allocator_tester,
   const crb_interval crb_lims = {
       crbs.start(), crbs.start() + cell_cfg.dl_cfg_common.init_dl_bwp.pdcch_common.coreset0->coreset0_crbs().length()};
 
-  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule); },
+  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule, false); },
                         [&]() { return find_ue_pdsch(u.crnti, res_grid[0].result.dl.ue_grants) != nullptr; }));
-  ASSERT_TRUE(crb_lims.contains(res_grid[0].result.dl.ue_grants.back().pdsch_cfg.rbs.type1()));
+  const auto& prb_alloc = res_grid[0].result.dl.ue_grants.back().pdsch_cfg.rbs.type1().convert_to<prb_interval>();
+  const auto  crb_alloc = prb_to_crb(crbs, prb_alloc);
+  ASSERT_TRUE(crb_lims.contains(crb_alloc));
 }
 
 TEST_P(ue_grid_allocator_tester, when_using_non_fallback_dci_format_use_mcs_table_set_in_pdsch_cfg)
@@ -287,7 +297,7 @@ TEST_P(ue_grid_allocator_tester, when_using_non_fallback_dci_format_use_mcs_tabl
   const ue& u = add_ue(ue_creation_req);
 
   // SearchSpace#2 uses non-fallback DCI format hence the MCS table set in dedicated PDSCH configuration must be used.
-  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule); },
+  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule, false); },
                         [&]() { return find_ue_pdsch(u.crnti, res_grid[0].result.dl.ue_grants) != nullptr; }));
   ASSERT_EQ(res_grid[0].result.dl.ue_grants.back().pdsch_cfg.codewords.back().mcs_table,
             srsran::pdsch_mcs_table::qam256);
@@ -362,8 +372,8 @@ TEST_P(ue_grid_allocator_tester, no_two_pdschs_are_allocated_in_same_slot_for_a_
 
   ASSERT_TRUE(run_until(
       [&]() {
-        allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule);
-        allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule);
+        allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule, false);
+        allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule, false);
       },
       [&]() { return find_ue_pdsch(u.crnti, res_grid[0].result.dl.ue_grants) != nullptr; }));
 
@@ -427,12 +437,12 @@ TEST_P(ue_grid_allocator_tester, consecutive_pdschs_for_a_ue_are_allocated_in_in
   const ue& u = add_ue(ue_creation_req);
 
   // First PDSCH grant for the UE.
-  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule); },
+  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule, false); },
                         [&]() { return find_ue_pdsch(u.crnti, res_grid[0].result.dl.ue_grants) != nullptr; }));
   slot_point last_pdsch_slot = current_slot;
 
   // Second PDSCH grant in the same slot for the UE.
-  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule); },
+  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule, false); },
                         [&]() { return find_ue_pdsch(u.crnti, res_grid[0].result.dl.ue_grants) != nullptr; }));
   ASSERT_GE(current_slot, last_pdsch_slot);
 }
@@ -448,12 +458,12 @@ TEST_P(ue_grid_allocator_tester,
   const ue& u = add_ue(ue_creation_req);
 
   // First PDSCH grant for the UE.
-  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule); },
+  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule, false); },
                         [&]() { return find_ue_pdsch(u.crnti, res_grid[0].result.dl.ue_grants) != nullptr; }));
   slot_point last_pdsch_ack_slot = current_slot + find_ue_pdsch(u.crnti, res_grid[0].result.dl.ue_grants)->context.k1;
 
   // Second PDSCH grant in the same slot for the UE.
-  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule); },
+  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule, false); },
                         [&]() { return find_ue_pdsch(u.crnti, res_grid[0].result.dl.ue_grants) != nullptr; }));
   ASSERT_GE(current_slot + find_ue_pdsch(u.crnti, res_grid[0].result.dl.ue_grants)->context.k1, last_pdsch_ack_slot);
 }
@@ -474,23 +484,24 @@ TEST_P(ue_grid_allocator_tester, successfully_allocated_pdsch_even_with_large_ga
   }
 
   // First PDSCH grant for the UE.
-  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule); },
+  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule, false); },
                         [&]() { return find_ue_pdsch(u.crnti, res_grid[0].result.dl.ue_grants) != nullptr; }));
 
   // Ensure next PDSCH to be allocated slot is after wrap around of 1024 SFNs (large gap to last allocated PDSCH slot)
   // and current slot value is less than last allocated PDSCH slot. e.g. next PDSCH to be allocated slot=SFN 2, slot 2
   // after wrap around of 1024 SFNs.
-  for (unsigned i = 0; i < current_slot.nof_slots_per_system_frame() / 2 + current_slot.nof_slots_per_frame(); ++i) {
+  for (unsigned i = 0; i < current_slot.nof_slots_per_hyper_system_frame() / 2 + current_slot.nof_slots_per_frame();
+       ++i) {
     slot_indication();
   }
 
   // Next PDSCH grant to be allocated.
-  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule); },
+  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u.ue_index], nof_bytes_to_schedule, false); },
                         [&]() { return find_ue_pdsch(u.crnti, res_grid[0].result.dl.ue_grants) != nullptr; },
                         nof_slot_until_pdsch_is_allocated_threshold));
 }
 
-TEST_P(ue_grid_allocator_tester, successfully_allocates_pdsch_with_gbr_lc_priortized_over_non_gbr_lc)
+TEST_P(ue_grid_allocator_tester, successfully_allocates_pdsch_with_gbr_lc_prioritized_over_non_gbr_lc)
 {
   const lcg_id_t lcg_id              = uint_to_lcg_id(2);
   const lcid_t   gbr_bearer_lcid     = uint_to_lcid(6);
@@ -514,15 +525,17 @@ TEST_P(ue_grid_allocator_tester, successfully_allocates_pdsch_with_gbr_lc_priort
   (*cfg_req.lc_config_list)[2]          = config_helpers::create_default_logical_channel_config(non_gbr_bearer_lcid);
   (*cfg_req.lc_config_list)[2].lc_group = lcg_id;
   (*cfg_req.lc_config_list)[2].qos.emplace();
-  (*cfg_req.lc_config_list)[2].qos->qos = *get_5qi_to_qos_characteristics_mapping(uint_to_five_qi(9));
-  (*cfg_req.lc_config_list)[3]          = config_helpers::create_default_logical_channel_config(gbr_bearer_lcid);
+  (*cfg_req.lc_config_list)[2].qos->qos          = *get_5qi_to_qos_characteristics_mapping(uint_to_five_qi(9));
+  (*cfg_req.lc_config_list)[2].qos->arp_priority = arp_prio_level_t::max();
+  (*cfg_req.lc_config_list)[3] = config_helpers::create_default_logical_channel_config(gbr_bearer_lcid);
   // Put GBR bearer in a different LCG than non-GBR bearer.
   (*cfg_req.lc_config_list)[3].lc_group = uint_to_lcg_id(lcg_id - 1);
   (*cfg_req.lc_config_list)[3].qos.emplace();
   (*cfg_req.lc_config_list)[3].qos->qos          = *get_5qi_to_qos_characteristics_mapping(uint_to_five_qi(1));
+  (*cfg_req.lc_config_list)[3].qos->arp_priority = arp_prio_level_t::max();
   (*cfg_req.lc_config_list)[3].qos->gbr_qos_info = gbr_qos_flow_information{128000, 128000, 128000, 128000};
   ue_config_update_event ev                      = cfg_mng.update_ue(reconf_msg);
-  u1.handle_reconfiguration_request({ev.next_config()});
+  u1.handle_reconfiguration_request({ev.next_config()}, false);
   u1.handle_config_applied();
 
   // Add LCID to the bearers of the UE belonging to this slice.
@@ -536,7 +549,7 @@ TEST_P(ue_grid_allocator_tester, successfully_allocates_pdsch_with_gbr_lc_priort
 
   static const unsigned sched_bytes = 2000U;
 
-  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u1.ue_index], sched_bytes); },
+  ASSERT_TRUE(run_until([&]() { allocate_dl_newtx_grant(slice_ues[u1.ue_index], sched_bytes, false); },
                         [&]() { return find_ue_pdsch(u1.crnti, res_grid[0].result.dl.ue_grants) != nullptr; }));
 
   const auto* ue_pdsch = find_ue_pdsch(u1.crnti, res_grid[0].result.dl.ue_grants);
@@ -568,7 +581,8 @@ TEST_P(ue_grid_allocator_tester, successfully_allocated_pusch_even_with_large_ga
   // Ensure next PUSCH to be allocated slot is after wrap around of 1024 SFNs (large gap to last allocated PUSCH slot)
   // and current slot value is less than last allocated PUSCH slot. e.g. next PUSCH to be allocated slot=SFN 2, slot 2
   // after wrap around of 1024 SFNs.
-  for (unsigned i = 0; i < current_slot.nof_slots_per_system_frame() / 2 + current_slot.nof_slots_per_frame(); ++i) {
+  for (unsigned i = 0; i < current_slot.nof_slots_per_hyper_system_frame() / 2 + current_slot.nof_slots_per_frame();
+       ++i) {
     slot_indication();
   }
 

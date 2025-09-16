@@ -34,8 +34,9 @@ namespace srsran {
 
 /// Configuration to enable/disable metrics per layer.
 struct cu_up_unit_metrics_layer_config {
-  bool enable_pdcp = false;
-  bool enable_e1ap = false;
+  bool enable_pdcp           = false;
+  bool enable_e1ap           = false;
+  bool enable_cu_up_executor = false;
 
   /// Returns true if one or more layers are enabled, false otherwise.
   bool are_metrics_enabled() const { return enable_pdcp || enable_e1ap; }
@@ -50,7 +51,7 @@ struct cu_up_unit_metrics_config {
 };
 
 struct cu_up_unit_ngu_socket_config {
-  std::string   bind_addr      = "auto";
+  std::string   bind_addr      = "127.0.0.1";
   std::string   bind_interface = "auto";
   std::string   ext_addr       = "auto";
   udp_appconfig udp_config     = {};
@@ -58,7 +59,7 @@ struct cu_up_unit_ngu_socket_config {
 
 /// GPTU parameters.
 struct cu_up_unit_ngu_gtpu_config {
-  unsigned                  gtpu_queue_size          = 8192;
+  unsigned                  gtpu_queue_size          = 2046;
   unsigned                  gtpu_batch_size          = 256;
   unsigned                  gtpu_reordering_timer_ms = 0;
   std::chrono::milliseconds rate_limiter_period{100};
@@ -99,6 +100,8 @@ struct cu_up_unit_execution_config {
   uint32_t dl_ue_executor_queue_size   = 8192;
   uint32_t ul_ue_executor_queue_size   = 8192;
   uint32_t ctrl_ue_executor_queue_size = 8192;
+  unsigned strand_batch_size           = 256;
+  bool     executor_tracing_enable     = false;
 };
 
 /// CU-UP application unit configuration.

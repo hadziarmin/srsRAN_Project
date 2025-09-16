@@ -37,51 +37,46 @@ namespace detail {
 // Specialization for strand with multiple queues of different priorities.
 struct priority_strand_queue {
   explicit priority_strand_queue(span<const concurrent_queue_params> strand_queue_params) :
-    queue(strand_queue_params, std::chrono::microseconds{0})
+    queue(strand_queue_params, std::chrono::microseconds{1}), consumer(queue.create_consumer())
   {
   }
 
   bool try_push(enqueue_priority prio, unique_task task) { return queue.try_push(prio, std::move(task)); }
 
+  /// Called to pop tasks from the strand queue.
+  /// \remark Technically, the pop should never fail, as the strand queue is always non-empty when this function is
+  /// called. However, some MPMC queue implementations may have spurious failures, so we need to retry.
   bool pop(unique_task& task)
   {
-    constexpr std::chrono::microseconds time_to_wait{1000};
-    std::chrono::microseconds           telapsed{0};
-    do {
-      if (queue.try_pop(task)) {
-        return true;
-      }
-      std::this_thread::sleep_for(std::chrono::microseconds{1});
-      telapsed += std::chrono::microseconds{1};
-    } while (telapsed < time_to_wait);
-    return false;
+    static constexpr std::chrono::microseconds time_to_wait{1000};
+    return consumer.pop_blocking(task, time_to_wait);
   }
 
   priority_task_queue queue;
+  // Note: We use the consumer interface because we can leverage the fact that the dequeues are sequential.
+  priority_task_queue::consumer_type consumer;
 };
 
 // Specialization for strand with single queue.
 template <concurrent_queue_policy QueuePolicy>
 struct strand_queue {
+  using queue_type = concurrent_queue<unique_task, QueuePolicy, concurrent_queue_wait_policy::non_blocking>;
+
   explicit strand_queue(unsigned strand_queue_size) : queue(strand_queue_size) {}
 
   bool try_push(unique_task task) { return queue.try_push(std::move(task)); }
 
   bool pop(unique_task& task)
   {
-    constexpr std::chrono::microseconds time_to_wait{1000};
-    std::chrono::microseconds           telapsed{0};
-    do {
-      if (queue.try_pop(task)) {
-        return true;
-      }
-      std::this_thread::sleep_for(std::chrono::microseconds{1});
-      telapsed += std::chrono::microseconds{1};
-    } while (telapsed < time_to_wait);
-    return false;
+    // Note: Some MPMC implementations have spurious failures, so we need to retry.
+    static constexpr std::chrono::microseconds time_to_wait{1000};
+    return detail::queue_helper::pop_blocking_generic(consumer, task, policy, time_to_wait);
   }
 
-  concurrent_queue<unique_task, QueuePolicy, concurrent_queue_wait_policy::non_blocking> queue;
+  queue_type                              queue;
+  detail::queue_helper::sleep_wait_policy policy{std::chrono::microseconds{1}};
+  // Note: We use the consumer interface because we can leverage the fact that the dequeues are sequential.
+  typename queue_type::consumer_type consumer{queue.create_consumer()};
 };
 
 } // namespace detail
@@ -192,13 +187,15 @@ class task_strand_impl
 {
 public:
   template <typename ExecType, typename... QueueParams>
-  explicit task_strand_impl(ExecType&& exec_, QueueParams&&... queue_params) :
-    out_exec(std::forward<ExecType>(exec_)), queue(std::forward<QueueParams>(queue_params)...)
+  explicit task_strand_impl(unsigned batch_max_size_, ExecType&& exec_, QueueParams&&... queue_params) :
+    batch_max_size(batch_max_size_),
+    out_exec(std::forward<ExecType>(exec_)),
+    queue(std::forward<QueueParams>(queue_params)...)
   {
   }
 
   // Called once task is enqueued in the strand queue to assess whether the strand should be locked and dispatched.
-  bool handle_enqueued_task(enqueue_priority prio, bool is_execute)
+  bool handle_enqueued_task(enqueue_priority prio)
   {
     // If the task_strand is acquired, it means that no other thread is running the pending tasks and we need to
     // dispatch a job to run them to the wrapped executor.
@@ -209,19 +206,14 @@ public:
       return true;
     }
 
-    // Check if the adapted executor gives us permission to run pending tasks inline. An example of when this may
-    // happen is when the caller is running in the same execution context of the underlying task worker or task worker
-    // pool. However, this permission is still not a sufficient condition to simply call the task inline. For
-    // instance, if the execution context is a thread pool, we have to ensure that the task_strand is not already
-    // acquired by another thread of the same pool. If we do not do this, running the task inline would conflict with
-    // the task_strand strict serialization requirements. For this reason, we will always enqueue the task and try to
-    // acquire the task_strand.
-    bool dispatch_successful;
-    if (is_execute) {
-      dispatch_successful = detail::get_task_executor_ref(out_exec).execute([this]() { run_enqueued_tasks(); });
-    } else {
-      dispatch_successful = detail::get_task_executor_ref(out_exec).defer([this]() { run_enqueued_tasks(); });
-    }
+    // We always resort to "defer" to dispatch the enqueued tasks.
+    // Note: The adapted executor giving us permission to run pending tasks inline is not a sufficient condition to
+    // do so, in case of strands. Why? If strands run inline tasks of other strands, we will start chaining tasks and
+    // entangling the strands, ending up limiting parallelization.
+    // Note: We should only allow inline execution if the caller is using the exact same strand executor, but
+    // to detect this situation, we would need to save the caller executor in a thread-local stack. I am not sure if it
+    // is worth it to implement this feature.
+    bool dispatch_successful = detail::get_task_executor_ref(out_exec).defer([this]() { run_enqueued_tasks(); });
     if (not dispatch_successful) {
       // Unable to dispatch executor job to run enqueued tasks.
       this->handle_failed_task_dispatch();
@@ -235,19 +227,22 @@ public:
   {
     unique_task task;
     uint32_t    queue_size = state.get_queue_size();
+
+    unsigned max_pops = batch_max_size;
     while (queue_size > 0) {
       // Note: We use a blocking pop because (in theory) at this point we have the guarantee that at least one task
       // is stored in the queue (job_count > 0). However, we still apply a timeout policy to catch unexpected
       // situations or invalid states of the strand. We could not use a non-blocking pop because some of the MPMC
       // queue implementations have spurious failures.
       unsigned run_count = 0;
-      for (; run_count != queue_size and queue.pop(task); ++run_count) {
+      unsigned max_count = std::min(queue_size, max_pops);
+      for (; run_count != max_count and queue.pop(task); ++run_count) {
         task();
       }
-      if (run_count != queue_size) {
+      if (run_count != max_count) {
         // Unexpected failure to pop enqueued tasks. Possible reason: Are you using an SPSC queue with multiple
         // producers?
-        srslog::fetch_basic_logger("ALL").error(
+        logger.error(
             "Couldn't run all pending tasks stored in strand in the thread {} (popped tasks={} < queue_size={}).",
             this_thread_name(),
             run_count,
@@ -258,38 +253,52 @@ public:
       // We have run all the tasks that were enqueued since when we computed queue_size.
       // Recompute the queue_size to check if there are tasks that were enqueued in the meantime.
       queue_size = state.on_task_completion(run_count);
+
+      max_pops -= run_count;
+
+      // Check if queue should yield back control.
+      if (queue_size > 0 and max_pops == 0) {
+        dispatch_value_dequeue_task();
+        break;
+      }
     }
+  }
+
+  bool dispatch_value_dequeue_task()
+  {
+    // Dispatch batch dequeue job.
+    bool dispatch_successful = detail::get_task_executor_ref(out_exec).defer([this]() { run_enqueued_tasks(); });
+    if (not dispatch_successful) {
+      handle_failed_task_dispatch();
+      return false;
+    }
+    return true;
   }
 
   void handle_failed_task_dispatch()
   {
     // Pop enqueued tasks until number of enqueued jobs is zero.
-    // Note: Since we acquired the task_strand, the task enqueued in this call should always be the first being
-    // popped. Note: If there is a single producer, only the task enqueued in this call will be popped. Note: As we
-    // currently hold the strand, there is no concurrent thread popping tasks.
+    // Note: As we currently hold the strand, there is no concurrent thread popping tasks.
+    // Note: Since the caller acquired the task_strand, the task enqueued in this call should be often the first being
+    // popped.
+    // Note: If there is a single producer, only the task enqueued in this call will be popped.
     uint32_t queue_size = state.get_queue_size();
 
-    srslog::fetch_basic_logger("ALL").warning("Failed to dispatch {} tasks stored in strand. Discarding them...",
-                                              queue_size);
+    logger.warning("Discarding {} tasks stored in strand. Cause: The strand cannot dispatch its task to executor.",
+                   queue_size);
 
     unique_task dropped_task;
     while (queue_size > 0) {
       unsigned run_count = 0;
       for (; run_count != queue_size and this->queue.pop(dropped_task); ++run_count) {
         // do nothing with popped task.
-        if (run_count != queue_size) {
-          // Unexpected failure to pop enqueued tasks. Possible reason: Are you using an SPSC queue with multiple
-          // producers?
-          srslog::fetch_basic_logger("ALL").error(
-              "Couldn't run all pending tasks stored in strand in the thread {} (popped tasks={} < queue_size={}).",
-              this_thread_name(),
-              run_count,
-              queue_size);
-        }
       }
       queue_size = state.on_task_completion(run_count);
     }
   }
+
+  // Maximum amount of task to run in one task of the outer executor.
+  const unsigned batch_max_size;
 
   // Executor to which tasks are dispatched in serialized manner.
   Executor out_exec;
@@ -299,6 +308,9 @@ public:
 
   // Number of jobs currently enqueued in the strand.
   StrandLockPolicy state;
+
+  // Logger used to report errors and warnings.
+  srslog::basic_logger& logger = srslog::fetch_basic_logger("ALL");
 };
 
 } // namespace detail
@@ -331,11 +343,16 @@ template <typename OutExec, concurrent_queue_policy QueuePolicy, typename Strand
 class task_strand final : public task_executor
 {
 public:
-  using executor_type = task_strand_executor<OutExec, QueuePolicy, StrandLockPolicy>;
+  static constexpr bool     is_basic_lock             = std::is_same_v<StrandLockPolicy, basic_strand_lock>;
+  static constexpr unsigned default_strand_batch_size = is_basic_lock ? 256 : std::numeric_limits<unsigned>::max();
+  using executor_type                                 = task_strand_executor<OutExec, QueuePolicy, StrandLockPolicy>;
 
   template <typename ExecType>
-  task_strand(ExecType&& out_exec, unsigned qsize) : impl(std::forward<ExecType>(out_exec), qsize), exec(*this)
+  task_strand(ExecType&& out_exec, unsigned qsize, unsigned max_batch = default_strand_batch_size) :
+    impl(max_batch, std::forward<ExecType>(out_exec), qsize), exec(*this)
   {
+    report_fatal_error_if_not(is_basic_lock or max_batch == std::numeric_limits<unsigned>::max(),
+                              "Cannot use limited batches with locking policies that are not \"basic_strand_lock\"");
   }
 
   [[nodiscard]] bool execute(unique_task task) override
@@ -344,17 +361,10 @@ public:
     if (not impl.queue.try_push(std::move(task))) {
       return false;
     }
-    return impl.handle_enqueued_task(enqueue_priority::max, true);
+    return impl.handle_enqueued_task(enqueue_priority::max);
   }
 
-  [[nodiscard]] bool defer(unique_task task) override
-  {
-    // Enqueue task in task_strand queue.
-    if (not impl.queue.try_push(std::move(task))) {
-      return false;
-    }
-    return impl.handle_enqueued_task(enqueue_priority::max, false);
-  }
+  [[nodiscard]] bool defer(unique_task task) override { return execute(std::move(task)); }
 
   /// Number of priority levels supported by this strand.
   size_t nof_priority_levels() { return 1; }
@@ -396,15 +406,21 @@ template <typename OutExec, typename StrandLockPolicy = basic_strand_lock>
 class priority_task_strand
 {
 public:
-  using strand_type   = priority_task_strand<OutExec, StrandLockPolicy>;
-  using executor_type = priority_task_strand_executor<strand_type&>;
+  static constexpr bool     is_basic_lock             = std::is_same_v<StrandLockPolicy, basic_strand_lock>;
+  static constexpr unsigned default_strand_batch_size = is_basic_lock ? 256 : std::numeric_limits<unsigned>::max();
+  using strand_type                                   = priority_task_strand<OutExec, StrandLockPolicy>;
+  using executor_type                                 = priority_task_strand_executor<strand_type&>;
 
   template <typename ExecType, typename ArrayOfQueueParams>
-  priority_task_strand(ExecType&& out_exec, const ArrayOfQueueParams& strand_queue_params) :
-    impl(std::forward<ExecType>(out_exec), strand_queue_params)
+  priority_task_strand(ExecType&&                out_exec,
+                       const ArrayOfQueueParams& strand_queue_params,
+                       unsigned                  max_batch = default_strand_batch_size) :
+    impl(max_batch, std::forward<ExecType>(out_exec), strand_queue_params)
   {
     static_assert(std::is_same_v<typename std::decay_t<ArrayOfQueueParams>::value_type, concurrent_queue_params>,
                   "Invalid queue params type");
+    report_fatal_error_if_not(is_basic_lock or max_batch == std::numeric_limits<unsigned>::max(),
+                              "Cannot use limited batches with locking policies that are not \"basic_strand_lock\"");
     exec_list.reserve(nof_priority_levels());
     for (unsigned i = 0; i != strand_queue_params.size(); ++i) {
       exec_list.emplace_back(executor_type{detail::queue_index_to_enqueue_priority(i, nof_priority_levels()), *this});
@@ -418,18 +434,11 @@ public:
     if (not impl.queue.try_push(prio, std::move(task))) {
       return false;
     }
-    return impl.handle_enqueued_task(prio, true);
+    return impl.handle_enqueued_task(prio);
   }
 
   /// \brief Dispatch task with priority \c prio. The task is never run inline.
-  [[nodiscard]] bool defer(enqueue_priority prio, unique_task task)
-  {
-    // Enqueue task in task_strand queue.
-    if (not impl.queue.try_push(prio, std::move(task))) {
-      return false;
-    }
-    return impl.handle_enqueued_task(prio, false);
-  }
+  [[nodiscard]] bool defer(enqueue_priority prio, unique_task task) { return execute(prio, std::move(task)); }
 
   /// Number of priority levels supported by this strand.
   size_t nof_priority_levels() { return impl.queue.queue.nof_priority_levels(); }
@@ -472,10 +481,13 @@ std::unique_ptr<task_executor> make_task_strand_ptr(OutExec&& out_exec, const co
 template <concurrent_queue_policy QueuePolicy,
           typename StrandType = basic_strand_lock,
           typename OutExec    = task_executor*>
-std::unique_ptr<task_executor> make_task_strand_ptr(OutExec&& out_exec, unsigned strand_queue_size)
+std::unique_ptr<task_executor>
+make_task_strand_ptr(OutExec&& out_exec,
+                     unsigned  strand_queue_size,
+                     unsigned  max_batch = task_strand<OutExec, QueuePolicy, StrandType>::default_strand_batch_size)
 {
-  return std::make_unique<task_strand<OutExec, QueuePolicy, StrandType>>(std::forward<OutExec>(out_exec),
-                                                                         strand_queue_size);
+  return std::make_unique<task_strand<OutExec, QueuePolicy, StrandType>>(
+      std::forward<OutExec>(out_exec), strand_queue_size, max_batch);
 }
 
 /// \brief Creates a task strand instance with several priority task levels.

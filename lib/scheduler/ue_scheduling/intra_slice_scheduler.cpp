@@ -21,6 +21,7 @@
  */
 
 #include "intra_slice_scheduler.h"
+#include "../logging/scheduler_metrics_handler.h"
 #include "srsran/ran/pdcch/search_space.h"
 
 using namespace srsran;
@@ -112,10 +113,12 @@ intra_slice_scheduler::intra_slice_scheduler(const scheduler_ue_expert_config& e
                                              pdcch_resource_allocator&         pdcch_alloc,
                                              uci_allocator&                    uci_alloc_,
                                              cell_resource_allocator&          cell_alloc_,
+                                             cell_metrics_handler&             cell_metrics_,
                                              cell_harq_manager&                cell_harqs_,
                                              srslog::basic_logger&             logger_) :
   expert_cfg(expert_cfg_),
   cell_alloc(cell_alloc_),
+  cell_metrics(cell_metrics_),
   cell_harqs(cell_harqs_),
   uci_alloc(uci_alloc_),
   logger(logger_),
@@ -283,7 +286,8 @@ unsigned intra_slice_scheduler::schedule_dl_retx_candidates(dl_ran_slice_candida
     }
 
     // Perform DL grant allocation, including PDCCH, PDSCH and UCI.
-    auto result = ue_alloc.allocate_dl_grant(ue_retx_dl_grant_request{u, pdsch_slot, h, used_dl_vrbs});
+    auto result =
+        ue_alloc.allocate_dl_grant(ue_retx_dl_grant_request{u, pdsch_slot, h, used_dl_vrbs, enable_pdsch_interleaving});
     if (not result.has_value() and result.error() == dl_alloc_failure_cause::skip_slot) {
       // Received signal to stop allocations in the slot.
       break;
@@ -524,14 +528,18 @@ unsigned intra_slice_scheduler::schedule_dl_newtx_candidates(dl_ran_slice_candid
     }
 
     // Compute the corresponding CRBs.
-    // TODO: support interleaving.
-    constexpr static search_space_id            ue_ded_ss_id = to_search_space_id(2);
-    const auto&                                 ss_info = grant_builder.ue().get_cc().cfg().search_space(ue_ded_ss_id);
-    const std::pair<crb_interval, crb_interval> alloc_crbs = {
-        prb_to_crb(ss_info.dl_crb_lims, static_cast<prb_interval>(alloc_vrbs)), {}};
+    static constexpr search_space_id      ue_ded_ss_id = to_search_space_id(2);
+    const auto&                           ss_info      = grant_builder.ue().get_cc().cfg().search_space(ue_ded_ss_id);
+    std::pair<crb_interval, crb_interval> alloc_crbs;
+    if (enable_pdsch_interleaving) {
+      const auto prbs = ss_info.interleaved_mapping.value().vrb_to_prb(alloc_vrbs);
+      alloc_crbs      = {prb_to_crb(ss_info.dl_crb_lims, prbs.first), prb_to_crb(ss_info.dl_crb_lims, prbs.second)};
+    } else {
+      alloc_crbs = {prb_to_crb(ss_info.dl_crb_lims, alloc_vrbs.convert_to<prb_interval>()), {}};
+    }
 
     // Save CRBs, MCS and RI.
-    grant_builder.set_pdsch_params(alloc_vrbs, alloc_crbs);
+    grant_builder.set_pdsch_params(alloc_vrbs, alloc_crbs, enable_pdsch_interleaving);
 
     // Fill used VRBs.
     const unsigned nof_rbs_alloc = alloc_vrbs.length();
@@ -668,7 +676,6 @@ bool intra_slice_scheduler::can_allocate_pusch(const slice_ue& u, const ue_cell&
   // Check if PDCCH/PUSCH are possible for the provided slots (e.g. not in UL slot or measGap)
   return ue_cc.is_pusch_enabled(pdcch_slot, pusch_slot);
 }
-
 std::optional<ue_newtx_candidate> intra_slice_scheduler::create_newtx_dl_candidate(const slice_ue& u) const
 {
   const ue_cell& ue_cc = u.get_cc();
@@ -689,19 +696,19 @@ std::optional<ue_newtx_candidate> intra_slice_scheduler::create_newtx_dl_candida
     if (not ue_cc.harqs.find_pending_dl_retx().has_value()) {
       // All HARQs are waiting for their respective HARQ-ACK. This may be a symptom of a long RTT for the PDSCH
       // and HARQ-ACK.
-      logger.warning(
+      logger.info(
           "ue={} rnti={} PDSCH allocation skipped. Cause: All the HARQs are allocated and waiting for their "
           "respective HARQ-ACK. Check if any HARQ-ACK went missing in the lower layers or is arriving too late to "
           "the scheduler.",
           fmt::underlying(ue_cc.ue_index),
           ue_cc.rnti());
+      cell_metrics.handle_late_dl_harqs();
     }
     return std::nullopt;
   }
 
   return ue_newtx_candidate{&u, &ue_cc, pending_bytes, forbid_sched_priority};
 }
-
 std::optional<ue_newtx_candidate> intra_slice_scheduler::create_newtx_ul_candidate(const slice_ue& u) const
 {
   const ue_cell& ue_cc = u.get_cc();
@@ -721,11 +728,12 @@ std::optional<ue_newtx_candidate> intra_slice_scheduler::create_newtx_ul_candida
     // No available HARQs.
     if (not ue_cc.harqs.find_pending_ul_retx().has_value()) {
       // All HARQs are waiting for their respective CRC. This may be a symptom of a slow PUSCH processing chain.
-      logger.warning("ue={} rnti={} PUSCH allocation skipped. Cause: All the UE HARQs are busy waiting for "
-                     "their respective CRC result. Check if any CRC PDU went missing in the lower layers or is "
-                     "arriving too late to the scheduler.",
-                     fmt::underlying(ue_cc.ue_index),
-                     ue_cc.rnti());
+      logger.info("ue={} rnti={} PUSCH allocation skipped. Cause: All the UE HARQs are busy waiting for "
+                  "their respective CRC result. Check if any CRC PDU went missing in the lower layers or is "
+                  "arriving too late to the scheduler.",
+                  fmt::underlying(ue_cc.ue_index),
+                  ue_cc.rnti());
+      cell_metrics.handle_late_ul_harqs();
     }
     return std::nullopt;
   }
@@ -746,10 +754,10 @@ unsigned intra_slice_scheduler::max_pdschs_to_alloc(const dl_ran_slice_candidate
   }
 
   // Determine how many PDCCHs can be allocated in this slot.
-  const auto& pdcch_res = cell_alloc[pdcch_slot].result;
-  pdschs_to_alloc       = std::min({pdschs_to_alloc,
-                                    static_cast<int>(MAX_DL_PDCCH_PDUS_PER_SLOT - pdcch_res.dl.dl_pdcchs.size()),
-                                    static_cast<int>(expert_cfg.max_pdcch_alloc_attempts_per_slot - dl_attempts_count)});
+  const auto& pdcch_res  = cell_alloc[pdcch_slot].result;
+  const int   max_pdcchs = std::min(static_cast<int>(MAX_DL_PDCCH_PDUS_PER_SLOT - pdcch_res.dl.dl_pdcchs.size()),
+                                  static_cast<int>(expert_cfg.max_pdcch_alloc_attempts_per_slot - dl_attempts_count));
+  pdschs_to_alloc        = std::min(pdschs_to_alloc, max_pdcchs);
   if (pdschs_to_alloc <= 0) {
     return 0;
   }
@@ -765,23 +773,26 @@ unsigned intra_slice_scheduler::max_pdschs_to_alloc(const dl_ran_slice_candidate
   }
 
   // Assume at least one RB per UE.
-  pdschs_to_alloc = std::min(pdschs_to_alloc, (int)slice.remaining_rbs());
+  pdschs_to_alloc = std::min(pdschs_to_alloc, static_cast<int>(slice.remaining_rbs()));
 
   return std::max(pdschs_to_alloc, 0);
 }
 
 unsigned intra_slice_scheduler::max_puschs_to_alloc(const ul_ran_slice_candidate& slice)
 {
+  if (not cell_alloc.cfg.is_ul_enabled(slice.get_slot_tx())) {
+    return 0;
+  }
+
   // We cannot allocate more than the number of UEs available.
   int puschs_to_alloc = slice.get_slice_ues().size();
 
-  // The max PUSCHs-per-slot limit cannot be exceeded.
+  // Determine how many PUSCHs can be allocated in this slot.
   const auto& pusch_res = cell_alloc[pusch_slot].result;
+  // The max PUSCHs-per-slot limit cannot be exceeded.
   // Note: We use signed integer to avoid unsigned overflow.
-  const int max_puschs = std::min(
-      static_cast<int>(std::min(static_cast<unsigned>(MAX_PUSCH_PDUS_PER_SLOT), expert_cfg.max_puschs_per_slot)),
-      puschs_to_alloc);
-  puschs_to_alloc = max_puschs - static_cast<int>(pusch_res.ul.puschs.size());
+  const int max_puschs = std::min(static_cast<unsigned>(MAX_PUSCH_PDUS_PER_SLOT), expert_cfg.max_puschs_per_slot);
+  puschs_to_alloc      = std::min(puschs_to_alloc, max_puschs - static_cast<int>(pusch_res.ul.puschs.size()));
   if (puschs_to_alloc <= 0) {
     return 0;
   }
@@ -794,17 +805,18 @@ unsigned intra_slice_scheduler::max_puschs_to_alloc(const ul_ran_slice_candidate
     return 0;
   }
 
-  // Assume at least one RB per UE.
-  puschs_to_alloc = std::min(puschs_to_alloc, static_cast<int>(slice.remaining_rbs()));
+  // Determine how many PDCCHs can be allocated in this slot.
+  const auto& pdcch_res  = cell_alloc[pdcch_slot].result;
+  const auto  max_pdcchs = std::min(static_cast<int>(MAX_UL_PDCCH_PDUS_PER_SLOT - pdcch_res.ul.puschs.size()),
+                                   static_cast<int>(expert_cfg.max_pdcch_alloc_attempts_per_slot - ul_attempts_count));
+  puschs_to_alloc        = std::min(puschs_to_alloc, max_pdcchs);
   if (puschs_to_alloc <= 0) {
     return 0;
   }
 
-  // Determine how many PDCCHs can be allocated in this slot.
-  const auto& pdcch_res = cell_alloc[pdcch_slot].result;
-  puschs_to_alloc       = std::min({puschs_to_alloc,
-                                    static_cast<int>(MAX_UL_PDCCH_PDUS_PER_SLOT - pdcch_res.dl.ul_pdcchs.size()),
-                                    static_cast<int>(expert_cfg.max_pdcch_alloc_attempts_per_slot - ul_attempts_count)});
+  // Assume at least one RB per UE.
+  puschs_to_alloc = std::min(puschs_to_alloc, static_cast<int>(slice.remaining_rbs()));
+
   return std::max(puschs_to_alloc, 0);
 }
 
@@ -815,17 +827,42 @@ void intra_slice_scheduler::update_used_dl_vrbs(const dl_ran_slice_candidate& sl
   const slice_ue_repository&       slice_ues    = slice.get_slice_ues();
   static constexpr search_space_id ue_ded_ss_id = to_search_space_id(2);
   const search_space_info&         ss_info      = slice_ues.begin()->get_cc().cfg().search_space(ue_ded_ss_id);
-  const auto&                      dl_crb_lims  = ss_info.dl_crb_lims;
 
   // [Implementation defined] We use the common PDSCH TD resources as a reference for the computation of RBs
   // unavailable for PDSCH. This assumes that these resources are not colliding with PDCCH.
   const auto&              init_dl_bwp      = cell_alloc.cfg.dl_cfg_common.init_dl_bwp;
   const ofdm_symbol_range& symbols_to_check = init_dl_bwp.pdsch_common.pdsch_td_alloc_list[0].symbols;
 
-  // TODO: perform inverse VRB-to-PRB mapping when interleaving is enabled for this slice/BWP.
-  used_dl_vrbs = cell_alloc[pdsch_slot]
-                     .dl_res_grid.used_prbs(init_dl_bwp.generic_params.scs, dl_crb_lims, symbols_to_check)
-                     .convert_to<vrb_bitmap>();
+  enable_pdsch_interleaving = ss_info.interleaved_mapping.has_value();
+  if (enable_pdsch_interleaving) {
+    for (const auto& pdsch : cell_alloc[pdsch_slot].result.dl.ue_grants) {
+      // [Implementation defined] Disable interleaving if there are non-interleaved PDSCH grants already allocated on
+      // that slot, to avoid wasting resources.
+      if (pdsch.pdsch_cfg.vrb_prb_mapping == vrb_to_prb::mapping_type::non_interleaved) {
+        enable_pdsch_interleaving = false;
+        break;
+      }
+    }
+  }
+
+  prb_bitmap used_prbs = cell_alloc[pdsch_slot].dl_res_grid.used_prbs(
+      init_dl_bwp.generic_params.scs, ss_info.dl_crb_lims, symbols_to_check);
+  // Mark as used the PRBs that fall outside the CRB limits.
+  const auto prb_lims = crb_to_prb(ss_info.dl_crb_lims,
+                                   slice_ues.begin()->get_cc().cfg().cell_cfg_common.expert_cfg.ue.pdsch_crb_limits &
+                                       ss_info.dl_crb_lims);
+  if (not prb_lims.empty()) {
+    used_prbs.fill(0, prb_lims.start());
+    used_prbs.fill(prb_lims.stop(), used_prbs.size());
+  }
+
+  // Perform inverse VRB-to-PRB mapping when interleaving is enabled for this slice/BWP.
+  if (enable_pdsch_interleaving) {
+    const auto& interleaved_mapping = ss_info.interleaved_mapping.value();
+    used_dl_vrbs                    = interleaved_mapping.prb_to_vrb(used_prbs);
+  } else {
+    used_dl_vrbs = used_prbs.convert_to<vrb_bitmap>();
+  }
 }
 
 void intra_slice_scheduler::update_used_ul_vrbs(const ul_ran_slice_candidate& slice)

@@ -273,8 +273,6 @@ private:
 /// Implementation of timer_manager.
 class timer_manager::manager_impl
 {
-  static constexpr size_t TIMER_CREATION_QUEUE_INITIAL_CAPACITY = 32;
-
 public:
   /// Timer context used solely by the back-end side of the timer manager.
   struct timer_backend_context {
@@ -298,7 +296,7 @@ public:
     logger(srslog::fetch_basic_logger("ALL")),
     timer_free_list(capacity),
     time_wheel(WHEEL_SIZE),
-    pending_timers_to_create(TIMER_CREATION_QUEUE_INITIAL_CAPACITY),
+    pending_timers_to_create(capacity),
     timers_with_pending_events(logger)
   {
     // Pre-reserve timers.
@@ -626,6 +624,11 @@ size_t timer_manager::nof_timers() const
 size_t timer_manager::nof_running_timers() const
 {
   return impl->nof_timers_running;
+}
+
+tick_point_t timer_manager::now() const
+{
+  return impl->cur_time.load(std::memory_order_relaxed);
 }
 
 // unique_timer methods

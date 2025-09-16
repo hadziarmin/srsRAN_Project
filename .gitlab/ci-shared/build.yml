@@ -87,7 +87,8 @@ variables:
   before_script:
     - |
       for var in \
-        CMAKE_BUILD_TYPE ASSERT_LEVEL ENABLE_EXPORT ENABLE_BACKWARD \
+        CMAKE_BUILD_TYPE LINKER \
+        ASSERT_LEVEL ENABLE_EXPORT ENABLE_BACKWARD \
         ENABLE_FFTW ENABLE_MKL ENABLE_ARMPL \
         ENABLE_UHD ENABLE_DPDK ENABLE_ZEROMQ \
         ENABLE_ASAN ENABLE_TSAN ENABLE_GCOV \
@@ -100,7 +101,7 @@ variables:
         fi
       done
       if [[ $TEST_MODE = "none" ]]; then
-        BUILD_ARGS="${BUILD_ARGS} -DBUILD_TESTS=False"
+        BUILD_ARGS="${BUILD_ARGS} -DBUILD_TESTING=False"
       fi
 
       BUILD_CMD="${BUILD_ARGS}"
@@ -158,4 +159,5 @@ variables:
         set -x
         ctest -j${KUBERNETES_CPU_REQUEST} --schedule-random --output-on-failure --output-junit xunit.xml $CTEST_ARGS
         { set +x; } 2>/dev/null
+        grep -l "ERROR SUMMARY: 0 errors" Testing/Temporary/MemoryChecker.*.log | xargs rm || true
       }

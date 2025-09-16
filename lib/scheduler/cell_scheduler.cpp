@@ -32,7 +32,6 @@ cell_scheduler::cell_scheduler(const scheduler_expert_config&                  s
                                ue_scheduler&                                   ue_sched_,
                                cell_metrics_handler&                           metrics_handler) :
   cell_cfg(cell_cfg_),
-  ue_sched(ue_sched_),
   res_grid(cell_cfg),
   event_logger(cell_cfg.cell_index, cell_cfg.pci),
   metrics(metrics_handler),
@@ -46,11 +45,10 @@ cell_scheduler::cell_scheduler(const scheduler_expert_config&                  s
   prach_sch(cell_cfg),
   pucch_alloc(cell_cfg, sched_cfg.ue.max_pucchs_per_slot, sched_cfg.ue.max_ul_grants_per_slot),
   uci_alloc(pucch_alloc),
-  pucch_guard_sch(cell_cfg),
   pg_sch(sched_cfg, cell_cfg, pdcch_sch, msg)
 {
   // Register new cell in the UE scheduler.
-  ue_sched.add_cell(ue_scheduler_cell_params{
+  ue_sched = ue_sched_.add_cell(ue_cell_scheduler_creation_request{
       msg.cell_index, &pdcch_sch, &pucch_alloc, &uci_alloc, &res_grid, &metrics, &event_logger});
 }
 
@@ -80,9 +78,9 @@ void cell_scheduler::handle_crc_indication(const ul_crc_indication& crc_ind)
     // Forward CRC to Msg3 HARQs that has no ueId yet associated.
     ra_sch.handle_crc_indication(msg3_crcs);
     // Forward remaining CRCs to UE scheduler.
-    ue_sched.get_feedback_handler().handle_crc_indication(ue_crcs);
+    ue_sched->get_feedback_handler().handle_crc_indication(ue_crcs);
   } else {
-    ue_sched.get_feedback_handler().handle_crc_indication(crc_ind);
+    ue_sched->get_feedback_handler().handle_crc_indication(crc_ind);
   }
 }
 
@@ -98,38 +96,36 @@ void cell_scheduler::run_slot(slot_point sl_tx)
       logger.info("Status: Detected skipped slot={}.", skipped_slot);
       reset_resource_grid(skipped_slot);
     }
+  } else {
+    if (SRSRAN_UNLIKELY(not active)) {
+      // Implicitly activate cell on slot_indication.
+      start();
+    }
   }
 
   // > Start with clearing old allocations from the grid.
   reset_resource_grid(sl_tx);
 
-  if (SRSRAN_LIKELY(is_running())) {
-    // Cell is active. Run the cell sub-schedulers.
+  // > SSB scheduling.
+  ssb_sch.run_slot(res_grid, sl_tx);
 
-    // > SSB scheduling.
-    ssb_sch.run_slot(res_grid, sl_tx);
+  // > Schedule CSI-RS.
+  csi_sch.run_slot(res_grid[0]);
 
-    // > Schedule CSI-RS.
-    csi_sch.run_slot(res_grid[0]);
+  // > Schedule SIB1 and SI-message signalling.
+  si_sch.run_slot(res_grid);
 
-    // > Schedule SIB1 and SI-message signalling.
-    si_sch.run_slot(res_grid);
+  // > Schedule PRACH PDUs.
+  prach_sch.run_slot(res_grid);
 
-    // > Schedule PUCCH guardbands.
-    pucch_guard_sch.run_slot(res_grid);
+  // > Schedule RARs and Msg3.
+  ra_sch.run_slot(res_grid);
 
-    // > Schedule PRACH PDUs.
-    prach_sch.run_slot(res_grid);
+  // > Schedule Paging.
+  pg_sch.run_slot(res_grid);
 
-    // > Schedule RARs and Msg3.
-    ra_sch.run_slot(res_grid);
-
-    // > Schedule Paging.
-    pg_sch.run_slot(res_grid);
-
-    // > Schedule UE DL and UL data.
-    ue_sched.run_slot(sl_tx);
-  }
+  // > Schedule UE DL and UL data.
+  ue_sched->run_slot(sl_tx);
 
   // > Mark stop of the slot processing
   auto slot_stop_tp = std::chrono::high_resolution_clock::now();
@@ -143,6 +139,11 @@ void cell_scheduler::run_slot(slot_point sl_tx)
 
   // > Push the scheduler results to the metrics handler.
   metrics.push_result(sl_tx, last_result(), slot_dur);
+}
+
+void cell_scheduler::handle_error_indication(slot_point sl_tx, scheduler_slot_handler::error_outcome event)
+{
+  ue_sched->handle_error_indication(sl_tx, event);
 }
 
 void cell_scheduler::reset_resource_grid(slot_point sl_tx)
@@ -162,10 +163,37 @@ void cell_scheduler::reset_resource_grid(slot_point sl_tx)
 
 void cell_scheduler::start()
 {
-  stopped.store(false, std::memory_order_relaxed);
+  if (active) {
+    return;
+  }
+  active = true;
+  logger.info("cell={}: Cell scheduling was activated.", fmt::underlying(cell_cfg.cell_index));
+
+  ue_sched->start();
 }
 
 void cell_scheduler::stop()
 {
-  stopped.store(true, std::memory_order_relaxed);
+  // From this point onwards, no slot indications are expected until the cell is reenabled.
+
+  if (not active) {
+    // Do nothing.
+    return;
+  }
+  active = false;
+  logger.info("cell={}: Cell scheduling was deactivated.", fmt::underlying(cell_cfg.cell_index));
+
+  // Stop sub-schedulers.
+  ssb_sch.stop();
+  si_sch.stop();
+  prach_sch.stop();
+  ra_sch.stop();
+  pg_sch.stop();
+  ue_sched->stop();
+
+  // Reset resource grid and sub-allocators.
+  res_grid.stop();
+  pdcch_sch.stop();
+  pucch_alloc.stop();
+  uci_alloc.stop();
 }

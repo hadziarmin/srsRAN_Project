@@ -52,7 +52,7 @@ struct cu_cp_unit_supported_ta_item {
 };
 
 struct cu_cp_unit_amf_config_item {
-  std::string ip_addr                = "127.0.0.1";
+  std::string ip_addr                = "127.0.1.100";
   uint16_t    port                   = 38412;
   std::string bind_addr              = "127.0.0.1";
   std::string bind_interface         = "auto";
@@ -61,7 +61,7 @@ struct cu_cp_unit_amf_config_item {
   int         sctp_rto_max_ms        = 500;
   int         sctp_init_max_attempts = 3;
   int         sctp_max_init_timeo_ms = 500;
-  int         sctp_hb_interval_s     = 30;
+  int         sctp_hb_interval_ms    = 30000;
   int         sctp_assoc_max_retx    = 10;
   bool        sctp_nodelay           = false;
 
@@ -92,6 +92,9 @@ struct cu_cp_unit_report_config {
                                                       ///< putting a value of -6 here results in -3dB offset.
   std::optional<unsigned> hysteresis_db;
   std::optional<unsigned> time_to_trigger_ms;
+  int                     periodic_ho_rsrp_offset =
+      -1; ///< -1 disables handovers from periodic measurements. [0..30] Note the actual value is field value * 0.5 dB.
+          ///< E.g. putting a value of -6 here results in -3dB offset.
 };
 
 struct cu_cp_unit_neighbor_cell_config_item {
@@ -142,9 +145,10 @@ struct cu_cp_unit_mobility_config {
 /// RRC specific configuration parameters.
 struct cu_cp_unit_rrc_config {
   bool force_reestablishment_fallback = false;
-  /// Timeout for RRC procedures (2 * default SRB maxRetxThreshold * t-PollRetransmit = 2 * 8 * 45ms = 720ms, see
-  /// TS 38.331 Sec 9.2.1).
-  unsigned rrc_procedure_timeout_ms = 720;
+  /// Guard time in ms that is added to the RRC procedure timeout.
+  /// NOTE: Guard time needs to be larger then SRB max retx thres * t-PollRetransmit.
+  /// (2 * default SRB maxRetxThreshold * t-PollRetransmit = 2 * 8 * 45ms = 720ms, see TS 38.331 Sec 9.2.1)
+  unsigned rrc_procedure_guard_time_ms = 1000;
 };
 
 /// Security configuration parameters.
@@ -267,10 +271,13 @@ struct cu_cp_unit_qos_config {
 
 /// Configuration to enable/disable metrics per layer.
 struct cu_cp_unit_metrics_layer_config {
-  bool enable_pdcp = false;
+  bool enable_ngap           = false;
+  bool enable_pdcp           = false;
+  bool enable_rrc            = false;
+  bool enable_cu_cp_executor = false;
 
   /// Returns true if one or more layers are enabled, false otherwise.
-  bool are_metrics_enabled() const { return enable_pdcp; }
+  bool are_metrics_enabled() const { return enable_ngap || enable_pdcp || enable_rrc; }
 };
 
 /// Metrics configuration.
@@ -284,7 +291,7 @@ struct cu_cp_unit_metrics_config {
 /// CU-CP application unit configuration.
 struct cu_cp_unit_config {
   /// Node name.
-  std::string ran_node_name = "cu_cp_01";
+  std::string ran_node_name = "srscucp01";
   /// gNB identifier.
   gnb_id_t gnb_id = {411, 22};
   /// Maximum number of DUs.

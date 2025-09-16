@@ -30,7 +30,7 @@
 #include "srsran/ran/cyclic_prefix.h"
 #include "srsran/ran/srs/srs_resource_formatter.h"
 #include "srsran/support/benchmark_utils.h"
-#include "srsran/support/complex_normal_random.h"
+#include "srsran/support/math/complex_normal_random.h"
 #include "srsran/support/srsran_test.h"
 #include <getopt.h>
 #include <random>
@@ -74,7 +74,7 @@ static void parse_args(int argc, char** argv)
       case 'h':
       default:
         usage(argv[0]);
-        exit(0);
+        std::exit(0);
     }
   }
 }

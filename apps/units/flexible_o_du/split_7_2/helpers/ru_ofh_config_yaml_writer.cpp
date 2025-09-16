@@ -38,12 +38,6 @@ static void fill_ru_ofh_expert_execution_section(YAML::Node node, const ru_ofh_u
     affinities_node["ru_timing_cpu"] = fmt::format("{:,}", span<const size_t>(config.ru_timing_cpu.get_cpu_ids()));
   }
 
-  {
-    YAML::Node threads_node               = node["threads"];
-    YAML::Node ofh_node                   = threads_node["ofh"];
-    ofh_node["enable_dl_parallelization"] = config.threads.is_downlink_parallelized;
-  }
-
   if (config.txrx_affinities.size() > 0) {
     YAML::Node affinities_node = node["affinities"];
     YAML::Node ofh_node        = affinities_node["ofh"];
@@ -106,6 +100,7 @@ static YAML::Node build_ru_ofh_cell_section(const ru_ofh_unit_cell_config& confi
   node["ignore_prach_start_symbol"]  = config.cell.ignore_prach_start_symbol;
   node["ignore_ecpri_seq_id"]        = config.cell.ignore_ecpri_seq_id_field;
   node["ignore_ecpri_payload_size"]  = config.cell.ignore_ecpri_payload_size_field;
+  node["log_lates_as_warnings"]      = config.cell.enable_log_warnings_for_lates;
   node["warn_unreceived_ru_frames"]  = to_string(config.cell.log_unreceived_ru_frames);
   node["compr_method_ul"]            = config.cell.compression_method_ul;
   node["compr_bitwidth_ul"]          = config.cell.compression_bitwidth_ul;
@@ -115,13 +110,24 @@ static YAML::Node build_ru_ofh_cell_section(const ru_ofh_unit_cell_config& confi
   node["compr_bitwidth_prach"]       = config.cell.compression_bitwidth_prach;
   node["enable_ul_static_compr_hdr"] = config.cell.is_uplink_static_comp_hdr_enabled;
   node["enable_dl_static_compr_hdr"] = config.cell.is_downlink_static_comp_hdr_enabled;
-  node["iq_scaling"]                 = config.cell.iq_scaling;
-  node["network_interface"]          = config.network_interface;
-  node["enable_promiscuous"]         = config.enable_promiscuous_mode;
-  node["mtu"]                        = config.mtu_size.value();
-  node["ru_mac_addr"]                = config.ru_mac_address;
-  node["du_mac_addr"]                = config.du_mac_address;
-  node["check_link_status"]          = config.check_link_status;
+  if (const auto* scaling_params = std::get_if<ru_ofh_scaling_config>(&config.cell.iq_scaling_config)) {
+    node["ru_reference_level_dBFS"] = scaling_params->ru_reference_level_dBFS;
+
+    if (scaling_params->subcarrier_rms_backoff_dB) {
+      node["subcarrier_rms_backoff_dB"] = *scaling_params->subcarrier_rms_backoff_dB;
+    } else {
+      node["subcarrier_rms_backoff_dB"] = "auto";
+    }
+  } else if (const auto* legacy_scaling_params =
+                 std::get_if<ru_ofh_legacy_scaling_config>(&config.cell.iq_scaling_config)) {
+    node["iq_scaling"] = legacy_scaling_params->iq_scaling;
+  }
+  node["network_interface"]  = config.network_interface;
+  node["enable_promiscuous"] = config.enable_promiscuous_mode;
+  node["mtu"]                = config.mtu_size.value();
+  node["ru_mac_addr"]        = config.ru_mac_address;
+  node["du_mac_addr"]        = config.du_mac_address;
+  node["check_link_status"]  = config.check_link_status;
 
   if (config.vlan_tag_cp.has_value()) {
     node["vlan_tag_cp"] = config.vlan_tag_cp.value();
@@ -129,17 +135,14 @@ static YAML::Node build_ru_ofh_cell_section(const ru_ofh_unit_cell_config& confi
   if (config.vlan_tag_up.has_value()) {
     node["vlan_tag_up"] = config.vlan_tag_up.value();
   }
-  for (auto id : config.ru_prach_port_id) {
-    node["prach_port_id"] = id;
-  }
+
+  node["prach_port_id"] = config.ru_prach_port_id;
   node["prach_port_id"].SetStyle(YAML::EmitterStyle::Flow);
-  for (auto id : config.ru_dl_port_id) {
-    node["dl_port_id"] = id;
-  }
+
+  node["dl_port_id"] = config.ru_dl_port_id;
   node["dl_port_id"].SetStyle(YAML::EmitterStyle::Flow);
-  for (auto id : config.ru_ul_port_id) {
-    node["ul_port_id"] = id;
-  }
+
+  node["ul_port_id"] = config.ru_ul_port_id;
   node["ul_port_id"].SetStyle(YAML::EmitterStyle::Flow);
 
   return node;

@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include "srsran/fapi/messages/config_request_tlvs.h"
 #include "srsran/fapi_adaptor/precoding_matrix_repository.h"
 #include "srsran/fapi_adaptor/uci_part2_correspondence_repository.h"
 #include "srsran/phy/upper/uplink_processor.h"
@@ -40,6 +41,7 @@ struct du_cell_config;
 }
 
 namespace fapi_adaptor {
+
 /// PHY&ndash;FAPI sector adaptor configuration.
 struct phy_fapi_sector_adaptor_config {
   /// Base station sector identifier.
@@ -48,8 +50,14 @@ struct phy_fapi_sector_adaptor_config {
   unsigned nof_slots_request_headroom;
   /// Allow uplink requests on empty UL_TTI.requests.
   bool allow_request_on_empty_ul_tti = false;
-  /// DU cell configuration.
-  const srs_du::du_cell_config& du_cell;
+  /// Subcarrier spacing as per TS38.211 Section 4.2.
+  subcarrier_spacing scs;
+  /// Common subcarrier spacing, as per TS38.331 Section 6.2.2.
+  subcarrier_spacing scs_common;
+  /// Carrier cell configuration.
+  fapi::carrier_config carrier_cfg;
+  /// PRACH cell configuration.
+  fapi::prach_config prach_cfg;
   /// PRACH port list.
   std::vector<uint8_t> prach_ports;
 };
@@ -66,8 +74,6 @@ struct phy_fapi_sector_adaptor_dependencies {
   const downlink_pdu_validator* dl_pdu_validator;
   /// Uplink request processor.
   uplink_request_processor* ul_request_processor;
-  /// Uplink resource grid pool.
-  resource_grid_pool* ul_rg_pool;
   /// Uplink slot PDU repository.
   uplink_pdu_slot_repository_pool* ul_pdu_repository;
   /// Uplink PDU validator.

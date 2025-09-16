@@ -28,11 +28,8 @@ using namespace app_helpers;
 
 void srsran::app_helpers::fill_metrics_appconfig_in_yaml_schema(YAML::Node& node, const metrics_config& config)
 {
-  YAML::Node log_node    = node["metrics"];
-  log_node["enable_log"] = config.enable_log_metrics;
-
-  // JSON configuration.
-  log_node["enable_json"] = config.json_config.enable_json_metrics;
-  log_node["addr"]        = config.json_config.addr;
-  log_node["port"]        = config.json_config.port;
+  YAML::Node log_node        = node["metrics"];
+  log_node["enable_log"]     = config.enable_log_metrics;
+  log_node["enable_json"]    = config.enable_json_metrics;
+  log_node["enable_verbose"] = config.enable_verbose;
 }

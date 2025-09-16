@@ -36,6 +36,7 @@ constexpr uint16_t E2_UP_PPID = 71; ///< E2-UP PPID assigned by IANA
 constexpr uint16_t E2_DU_PPID = 72; ///< E2-DU PPID assigned by IANA
 
 constexpr uint16_t NGAP_PORT = 38412; ///< NGAP port, see TS 38.412, section 7.
+constexpr uint16_t E1AP_PORT = 38462; ///< E1AP port, see TS 38.462, section 7.
 constexpr uint16_t F1AP_PORT = 38472; ///< F1AP port, see TS 38.472, section 7.
 
 /// \brief Configuration for SCTP network gateway that is common to the server and client.
@@ -49,7 +50,7 @@ struct sctp_network_gateway_config : public common_network_gateway_config {
   std::optional<std::chrono::milliseconds> rto_max;
   std::optional<int32_t>                   init_max_attempts;
   std::optional<std::chrono::milliseconds> max_init_timeo;
-  std::optional<std::chrono::seconds>      hb_interval;
+  std::optional<std::chrono::milliseconds> hb_interval;
   std::optional<int32_t>                   assoc_max_rxt;
   std::optional<bool>                      nodelay;
 };

@@ -394,15 +394,15 @@ ngap_message srsran::srs_cu_cp::generate_pdu_session_resource_setup_request_base
 }
 
 ngap_message srsran::srs_cu_cp::generate_valid_pdu_session_resource_setup_request_message(
-    amf_ue_id_t                                                          amf_ue_id,
-    ran_ue_id_t                                                          ran_ue_id,
-    const std::map<pdu_session_id_t, std::vector<qos_flow_test_params>>& pdu_sessions)
+    amf_ue_id_t                                                amf_ue_id,
+    ran_ue_id_t                                                ran_ue_id,
+    const std::map<pdu_session_id_t, pdu_session_test_params>& pdu_sessions)
 {
   ngap_message ngap_msg = generate_pdu_session_resource_setup_request_base(amf_ue_id, ran_ue_id);
 
   auto& pdu_session_res_setup_req = ngap_msg.pdu.init_msg().value.pdu_session_res_setup_request();
 
-  for (const auto& [pdu_session_id, qos_flows] : pdu_sessions) {
+  for (const auto& [pdu_session_id, pdu_session_params] : pdu_sessions) {
     pdu_session_res_setup_item_su_req_s pdu_session_res_item;
 
     pdu_session_res_item.pdu_session_id = pdu_session_id_to_uint(pdu_session_id);
@@ -434,10 +434,10 @@ ngap_message srsran::srs_cu_cp::generate_valid_pdu_session_resource_setup_reques
       asn1_setup_req_transfer->ul_ngu_up_tnl_info.gtp_tunnel().gtp_teid.from_number(0x00005e6c);
 
       // Fill PDU session type.
-      asn1_setup_req_transfer->pdu_session_type = asn1::ngap::pdu_session_type_opts::ipv4;
+      asn1_setup_req_transfer->pdu_session_type = pdu_session_type_to_asn1(pdu_session_params.pdu_session_type);
 
       // Fill QoS flow setup request list.
-      for (const auto& qos_flow_test_item : qos_flows) {
+      for (const auto& qos_flow_test_item : pdu_session_params.qos_flows) {
         qos_flow_setup_request_item_s qos_flow_setup_req_item;
         qos_flow_setup_req_item.qos_flow_id = qos_flow_id_to_uint(qos_flow_test_item.qos_flow_id);
 
@@ -512,7 +512,7 @@ ngap_message srsran::srs_cu_cp::
         ran_ue_id_t ran_ue_id)
 {
   ngap_message ngap_msg = generate_valid_pdu_session_resource_setup_request_message(
-      amf_ue_id, ran_ue_id, {{uint_to_pdu_session_id(1), {{uint_to_qos_flow_id(1), 9}}}});
+      amf_ue_id, ran_ue_id, {{uint_to_pdu_session_id(1), {pdu_session_type_t::ipv4, {{uint_to_qos_flow_id(1), 9}}}}});
 
   // Fill invalid PDU session resource setup request transfer.
   auto& pdu_session_res_setup_req = ngap_msg.pdu.init_msg().value.pdu_session_res_setup_request();
@@ -1057,6 +1057,21 @@ ngap_message srsran::srs_cu_cp::generate_handover_cancel_ack(amf_ue_id_t amf_ue_
 
   ho_cancel_ack->amf_ue_ngap_id = amf_ue_id_to_uint(amf_ue_id);
   ho_cancel_ack->ran_ue_ngap_id = ran_ue_id_to_uint(ran_ue_id);
+
+  return ngap_msg;
+}
+
+ngap_message srsran::srs_cu_cp::generate_ng_reset_ack(const asn1::ngap::ue_associated_lc_ng_conn_list_l& ng_reset_ues)
+{
+  ngap_message ngap_msg;
+
+  ngap_msg.pdu.set_successful_outcome();
+  ngap_msg.pdu.successful_outcome().load_info_obj(ASN1_NGAP_ID_NG_RESET);
+  if (ng_reset_ues.size() > 0) {
+    auto& ng_reset_ack                                  = ngap_msg.pdu.successful_outcome().value.ng_reset_ack();
+    ng_reset_ack->ue_associated_lc_ng_conn_list_present = true;
+    ng_reset_ack->ue_associated_lc_ng_conn_list         = ng_reset_ues;
+  }
 
   return ngap_msg;
 }

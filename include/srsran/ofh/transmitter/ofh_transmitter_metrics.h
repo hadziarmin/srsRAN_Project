@@ -36,6 +36,10 @@ struct transmitter_dl_metrics {
   tx_data_flow_perf_metrics dl_up_metrics;
   /// Number of late downlink resource grids received from the PHY.
   unsigned nof_late_dl_grids;
+  /// Number of late Control-Plane downlink messages, ie, messages that were not transmitted.
+  unsigned nof_late_cp_dl;
+  /// Number of late User-Plane downlink messages, ie, messages that were not transmitted.
+  unsigned nof_late_up_dl;
 };
 
 /// Open Fronthaul transmitter uplink requests processing metrics.
@@ -44,13 +48,27 @@ struct transmitter_ul_metrics {
   tx_data_flow_perf_metrics ul_cp_metrics;
   /// Number of late uplink request.
   unsigned nof_late_ul_requests;
+  /// Number of late Control-Plane uplink messages, ie, messages that were not transmitted.
+  unsigned nof_late_cp_ul;
+};
+
+/// Open Fronthaul message transmitter metrics.
+struct message_transmitter_metrics {
+  /// Message enqueueing and transmission statistics.
+  float message_tx_min_latency_us;
+  float message_tx_max_latency_us;
+  float message_tx_avg_latency_us;
+
+  /// CPU usage in microseconds of the message transmitter processing.
+  float cpu_usage_us;
 };
 
 /// Open Fronthaul transmitter metrics.
 struct transmitter_metrics {
-  transmitter_dl_metrics     dl_metrics;
-  transmitter_ul_metrics     ul_metrics;
-  ether::transmitter_metrics eth_transmitter_metrics;
+  transmitter_dl_metrics      dl_metrics;
+  transmitter_ul_metrics      ul_metrics;
+  message_transmitter_metrics message_tx_metrics;
+  ether::transmitter_metrics  eth_transmitter_metrics;
 };
 
 } // namespace ofh

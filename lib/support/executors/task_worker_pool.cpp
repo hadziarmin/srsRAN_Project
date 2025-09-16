@@ -37,9 +37,10 @@ std::function<void()> worker_task_factory(Queue& queue, unsigned nof_workers, un
     execution_context::set_execution_context_description(nof_workers, worker_idx);
 
     // start worker pop loop.
+    auto consumer = queue.create_consumer();
     while (true) {
       unique_task job;
-      if (not queue.pop_blocking(job)) {
+      if (not consumer.pop_blocking(job)) {
         break;
       }
       job();
@@ -60,7 +61,7 @@ detail::base_worker_pool::base_worker_pool(unsigned                             
 
   if (cpu_masks.size() > 1) {
     // An array with a single mask is allowed, otherwise the number of masks must be equal to the number of workers.
-    report_error_if_not(cpu_masks.size() == nof_workers_, "Wrong array of CPU masks provided");
+    report_error_if_not(cpu_masks.size() == nof_workers_, "Wrong array of CPU masks provided for {}", worker_pool_name);
   }
 
   // Task dispatched to workers of the pool.
@@ -177,9 +178,10 @@ task_worker_pool<QueuePolicy>::task_worker_pool(std::string                     
                                                 unsigned                              nof_workers_,
                                                 unsigned                              qsize_,
                                                 std::chrono::microseconds             wait_sleep_time,
+                                                unsigned                              nof_prereserved_producers,
                                                 os_thread_realtime_priority           prio,
                                                 span<const os_sched_affinity_bitmask> cpu_masks) :
-  detail::base_task_queue<QueuePolicy>(qsize_, wait_sleep_time),
+  detail::base_task_queue<QueuePolicy>(qsize_, wait_sleep_time, nof_prereserved_producers),
   detail::base_worker_pool(
       nof_workers_,
       std::move(worker_pool_name),

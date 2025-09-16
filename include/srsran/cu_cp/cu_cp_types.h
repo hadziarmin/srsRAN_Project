@@ -40,6 +40,7 @@
 #include "srsran/ran/tac.h"
 #include "srsran/ran/up_transport_layer_info.h"
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -78,13 +79,13 @@ inline ue_index_t uint_to_ue_index(std::underlying_type_t<ue_index_t> index)
 enum class du_index_t : uint16_t { min = 0, max = MAX_NOF_DUS - 1, invalid = MAX_NOF_DUS };
 
 /// Convert integer to DU index type.
-constexpr inline du_index_t uint_to_du_index(std::underlying_type_t<du_index_t> index)
+constexpr du_index_t uint_to_du_index(std::underlying_type_t<du_index_t> index)
 {
   return static_cast<du_index_t>(index);
 }
 
 /// Convert DU index type to integer.
-constexpr inline std::underlying_type_t<du_index_t> du_index_to_uint(du_index_t du_index)
+constexpr std::underlying_type_t<du_index_t> du_index_to_uint(du_index_t du_index)
 {
   return static_cast<std::underlying_type_t<du_index_t>>(du_index);
 }
@@ -93,13 +94,13 @@ constexpr inline std::underlying_type_t<du_index_t> du_index_to_uint(du_index_t 
 enum class cu_up_index_t : uint16_t { min = 0, max = MAX_NOF_CU_UPS - 1, invalid = MAX_NOF_CU_UPS };
 
 /// Convert integer to CU-UP index type.
-constexpr inline cu_up_index_t uint_to_cu_up_index(std::underlying_type_t<cu_up_index_t> index)
+constexpr cu_up_index_t uint_to_cu_up_index(std::underlying_type_t<cu_up_index_t> index)
 {
   return static_cast<cu_up_index_t>(index);
 }
 
 /// Convert CU-UP index type to integer.
-constexpr inline std::underlying_type_t<cu_up_index_t> cu_up_index_to_uint(cu_up_index_t cu_up_index)
+constexpr std::underlying_type_t<cu_up_index_t> cu_up_index_to_uint(cu_up_index_t cu_up_index)
 {
   return static_cast<std::underlying_type_t<cu_up_index_t>>(cu_up_index);
 }
@@ -114,7 +115,7 @@ inline du_cell_index_t uint_to_du_cell_index(std::underlying_type_t<du_cell_inde
 }
 
 /// Convert DU cell index type to integer.
-constexpr inline std::underlying_type_t<du_cell_index_t> du_cell_index_to_uint(du_cell_index_t du_cell_index)
+constexpr std::underlying_type_t<du_cell_index_t> du_cell_index_to_uint(du_cell_index_t du_cell_index)
 {
   return static_cast<std::underlying_type_t<du_cell_index_t>>(du_cell_index);
 }
@@ -123,13 +124,13 @@ constexpr inline std::underlying_type_t<du_cell_index_t> du_cell_index_to_uint(d
 enum class amf_index_t : uint16_t { min = 0, max = MAX_NOF_AMFS - 1, invalid = MAX_NOF_AMFS };
 
 /// Convert integer to AMF index type.
-constexpr inline amf_index_t uint_to_amf_index(std::underlying_type_t<amf_index_t> index)
+constexpr amf_index_t uint_to_amf_index(std::underlying_type_t<amf_index_t> index)
 {
   return static_cast<amf_index_t>(index);
 }
 
 /// Convert AMF index type to integer.
-constexpr inline std::underlying_type_t<amf_index_t> amf_index_to_uint(amf_index_t amf_index)
+constexpr std::underlying_type_t<amf_index_t> amf_index_to_uint(amf_index_t amf_index)
 {
   return static_cast<std::underlying_type_t<amf_index_t>>(amf_index);
 }
@@ -327,7 +328,7 @@ struct cu_cp_pdu_session_res_setup_item {
   std::optional<uint64_t>                                       pdu_session_aggregate_maximum_bit_rate_dl;
   std::optional<uint64_t>                                       pdu_session_aggregate_maximum_bit_rate_ul;
   up_transport_layer_info                                       ul_ngu_up_tnl_info;
-  std::string                                                   pdu_session_type;
+  pdu_session_type_t                                            pdu_session_type;
   std::optional<security_indication_t>                          security_ind;
   slotted_id_vector<qos_flow_id_t, qos_flow_setup_request_item> qos_flow_setup_request_items;
 };
@@ -500,9 +501,10 @@ struct cu_cp_pdu_session_resource_modify_response {
 };
 
 struct cu_cp_ue_context_release_command {
-  ue_index_t   ue_index = ue_index_t::invalid;
-  ngap_cause_t cause;
-  bool         requires_rrc_release = true;
+  ue_index_t                          ue_index = ue_index_t::invalid;
+  ngap_cause_t                        cause;
+  bool                                requires_rrc_release = true;
+  std::optional<std::chrono::seconds> release_wait_time    = std::nullopt;
 };
 
 struct cu_cp_ue_context_release_request {
@@ -587,6 +589,11 @@ struct cu_cp_paging_message {
   std::optional<cu_cp_assist_data_for_paging>  assist_data_for_paging;
 };
 
+struct cu_cp_bearer_context_release_request {
+  ue_index_t   ue_index = ue_index_t::invalid;
+  ngap_cause_t cause;
+};
+
 struct cu_cp_inactivity_notification {
   ue_index_t                    ue_index    = ue_index_t::invalid;
   bool                          ue_inactive = false;
@@ -604,14 +611,6 @@ struct cu_cp_intra_cu_handover_request {
 struct cu_cp_intra_cu_handover_response {
   // Place-holder for possible return values.
   bool success = false;
-};
-
-// Request sent to the target DU to prepare for the handover RRC reconfiguration.
-struct cu_cp_intra_cu_handover_target_request {
-  ue_index_t                target_ue_index = ue_index_t::invalid;
-  ue_index_t                source_ue_index = ue_index_t::invalid;
-  uint8_t                   transaction_id;
-  std::chrono::milliseconds timeout;
 };
 
 } // namespace srs_cu_cp

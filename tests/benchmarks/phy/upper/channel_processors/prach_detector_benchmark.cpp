@@ -24,8 +24,8 @@
 #include "srsran/phy/upper/channel_processors/channel_processor_factories.h"
 #include "srsran/phy/upper/channel_processors/channel_processor_formatters.h"
 #include "srsran/support/benchmark_utils.h"
-#include "srsran/support/complex_normal_random.h"
 #include "srsran/support/error_handling.h"
+#include "srsran/support/math/complex_normal_random.h"
 #include <getopt.h>
 #include <random>
 #include <set>
@@ -72,7 +72,7 @@ static int parse_args(int argc, char** argv)
       case 'h':
       default:
         usage(argv[0]);
-        exit(0);
+        std::exit(0);
     }
   }
 

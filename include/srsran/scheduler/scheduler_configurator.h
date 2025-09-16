@@ -46,7 +46,7 @@
 
 namespace srsran {
 
-class scheduler_metrics_notifier;
+class scheduler_cell_metrics_notifier;
 
 /// Basic scheduler resource grid element for resource reservation.
 struct sched_grid_resource {
@@ -64,8 +64,10 @@ struct sched_grid_resource {
 /// \remark See O-RAN WG8, Section 9.2.3.2.1, Table 9.18.
 struct sched_cell_configuration_request_message {
   struct metrics_config {
-    std::chrono::milliseconds   report_period{0};
-    scheduler_metrics_notifier* notifier = nullptr;
+    std::chrono::milliseconds        report_period{0};
+    scheduler_cell_metrics_notifier* notifier = nullptr;
+    /// Maximum number of UE events per report.
+    unsigned max_ue_events_per_report = 64;
   };
 
   du_cell_index_t       cell_index;
@@ -151,6 +153,8 @@ struct sched_ue_config_request {
   std::optional<drx_config> drx_cfg;
   /// measGapConfig.
   std::optional<meas_gap_config> meas_gap_cfg;
+  /// Whether this configuration procedure comes after rrcReestablishment.
+  bool reestablished;
 };
 
 /// Request to create a new UE in scheduler.
@@ -172,6 +176,7 @@ struct sched_ue_reconfiguration_message {
   du_ue_index_t           ue_index;
   rnti_t                  crnti;
   sched_ue_config_request cfg;
+  bool                    reestablished;
 };
 
 /// UE Delete Request.
@@ -220,9 +225,11 @@ public:
   virtual void handle_rach_indication(const rach_indication_message& msg) = 0;
 
   /// \brief Activate a configured cell. This method has no effect if the cell is already active.
+  /// \remark This method needs to be called in the same thread as the slot_indication() method.
   virtual void handle_cell_activation_request(du_cell_index_t cell_index) = 0;
 
   /// \brief Deactivate a configured cell. This method has no effect if the cell is already deactivated.
+  /// \remark This method needs to be called after the last slot_indication() call.
   virtual void handle_cell_deactivation_request(du_cell_index_t cell_index) = 0;
 };
 

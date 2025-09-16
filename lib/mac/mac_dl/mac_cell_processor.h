@@ -32,7 +32,7 @@
 #include "rar_pdu_assembler.h"
 #include "sib_pdu_assembler.h"
 #include "ssb_assembler.h"
-#include "srsran/mac/mac.h"
+#include "srsran/support/async/manual_event.h"
 #include "srsran/support/memory_pool/ring_buffer_pool.h"
 
 namespace srsran {
@@ -42,16 +42,16 @@ class timer_manager;
 class mac_cell_processor final : public mac_cell_slot_handler, public mac_cell_controller
 {
 public:
-  mac_cell_processor(const mac_cell_creation_request&     cell_cfg_req,
-                     mac_scheduler_cell_info_handler&     sched,
-                     du_rnti_table&                       rnti_table,
-                     mac_cell_result_notifier&            phy_notifier,
-                     task_executor&                       cell_exec,
-                     task_executor&                       slot_exec,
-                     task_executor&                       ctrl_exec,
-                     mac_pcap&                            pcap,
-                     timer_manager&                       timers,
-                     const mac_cell_metric_report_config& metrics_cfg);
+  mac_cell_processor(const mac_cell_creation_request& cell_cfg_req,
+                     mac_scheduler_cell_info_handler& sched,
+                     du_rnti_table&                   rnti_table,
+                     mac_cell_result_notifier&        phy_notifier,
+                     task_executor&                   cell_exec,
+                     task_executor&                   slot_exec,
+                     task_executor&                   ctrl_exec,
+                     mac_pcap&                        pcap,
+                     timer_manager&                   timers,
+                     mac_cell_config_dependencies     dependencies);
 
   /// Starts configured cell.
   async_task<void> start() override;
@@ -63,8 +63,9 @@ public:
 
   mac_cell_time_mapper_impl& get_time_mapper() { return slot_time_mapper; }
 
-  void handle_slot_indication(const mac_cell_timing_context& context) override;
-  void handle_error_indication(slot_point sl_tx, error_event event) override;
+  void handle_slot_indication(const mac_cell_timing_context& context) noexcept override;
+  void handle_error_indication(slot_point sl_tx, error_event event) noexcept override;
+  void handle_stop_indication() noexcept override;
 
   /// Creates new UE DL context, updates logical channel MUX, adds UE in scheduler.
   async_task<bool> add_ue(const mac_ue_create_request& request);
@@ -73,14 +74,14 @@ public:
   async_task<void> remove_ue(const mac_ue_delete_request& request);
 
   /// Add/Modify UE bearers in the MUX.
-  async_task<bool> addmod_bearers(du_ue_index_t                                  ue_index,
-                                  const std::vector<mac_logical_channel_config>& logical_channels);
+  async_task<bool> addmod_bearers(du_ue_index_t ue_index, span<const mac_logical_channel_config> logical_channels);
 
   /// Remove UE bearers in the MUX.
   async_task<bool> remove_bearers(du_ue_index_t ue_index, span<const lcid_t> lcids_to_rem);
 
 private:
-  void handle_slot_indication_impl(slot_point sl_tx, std::chrono::high_resolution_clock::time_point enqueue_slot_tp);
+  void handle_slot_indication_impl(slot_point                                     sl_tx,
+                                   std::chrono::high_resolution_clock::time_point enqueue_slot_tp) noexcept;
 
   /// Assemble struct that is going to be passed down to PHY with the DL scheduling result.
   /// \remark FAPI will use this struct to generate a DL_TTI.Request.
@@ -99,8 +100,9 @@ private:
   /// Update DL buffer states of the allocated DL bearers.
   void update_logical_channel_dl_buffer_states(const dl_sched_result& dl_res);
 
-  void write_tx_pdu_pcap(const slot_point& sl_tx, const sched_result& sl_res, const mac_dl_data_result& dl_res);
+  void write_tx_pdu_pcap(slot_point sl_tx, const sched_result& sl_res, const mac_dl_data_result& dl_res);
 
+  // Dependencies.
   srslog::basic_logger&           logger;
   const mac_cell_creation_request cell_cfg;
   task_executor&                  cell_exec;
@@ -128,17 +130,22 @@ private:
 
   mac_scheduler_cell_info_handler& sched;
 
+  /// Ticks the APP clock based on the received slot indications for this cell.
+  std::unique_ptr<mac_cell_clock_controller> time_source;
+
   // Handler of cell metrics
   mac_dl_cell_metric_handler metrics;
 
   // Represents cell activation state.
-  enum class cell_state { inactive, activating, active } state = cell_state::inactive;
+  enum class cell_state { inactive, active } state = cell_state::inactive;
+  manual_event_flag stop_completed;
 
   mac_pcap& pcap;
 
   mac_cell_time_mapper_impl slot_time_mapper;
 
-  bool sib1_pcap_dumped = false;
+  unsigned                              sib1_pcap_dumped_version;
+  std::array<unsigned, MAX_SI_MESSAGES> si_pcap_dumped_version;
 };
 
 } // namespace srsran

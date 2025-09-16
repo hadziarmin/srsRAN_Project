@@ -34,7 +34,6 @@
 #include "logging/scheduler_result_logger.h"
 #include "pdcch_scheduling/pdcch_resource_allocator_impl.h"
 #include "pucch_scheduling/pucch_allocator_impl.h"
-#include "pucch_scheduling/pucch_guardbands_scheduler.h"
 #include "uci_scheduling/uci_allocator_impl.h"
 #include "ue_scheduling/ue_scheduler.h"
 
@@ -53,7 +52,11 @@ public:
                           ue_scheduler&                                   ue_sched,
                           cell_metrics_handler&                           metrics);
 
+  /// Handle a slot indication for this cell.
   void run_slot(slot_point sl_tx);
+
+  /// Handle an error indication for this cell.
+  void handle_error_indication(slot_point sl_tx, scheduler_slot_handler::error_outcome event);
 
   /// Activate cell.
   void start();
@@ -63,9 +66,6 @@ public:
 
   const sched_result& last_result() const { return res_grid[0].result; }
 
-  /// Check if the cell is running.
-  bool is_running() const { return not stopped.load(std::memory_order_relaxed); }
-
   void handle_si_update_request(const si_scheduling_update_request& msg);
 
   void handle_rach_indication(const rach_indication_message& msg) { ra_sch.handle_rach_indication(msg); }
@@ -74,10 +74,15 @@ public:
 
   void handle_paging_information(const sched_paging_information& pi) { pg_sch.handle_paging_information(pi); }
 
-  const cell_configuration& cell_cfg;
+  scheduler_feedback_handler&    get_feedback_handler() { return ue_sched->get_feedback_handler(); }
+  scheduler_positioning_handler& get_positioning_handler() { return ue_sched->get_positioning_handler(); }
+  scheduler_dl_buffer_state_indication_handler& get_dl_buffer_state_indication_handler()
+  {
+    return ue_sched->get_dl_buffer_state_indication_handler();
+  }
+  sched_ue_configuration_handler& get_ue_configurator() { return ue_sched->get_ue_configurator(); }
 
-  /// Reference to UE scheduler whose DU cell group contains this cell.
-  ue_scheduler& ue_sched;
+  const cell_configuration& cell_cfg;
 
 private:
   void reset_resource_grid(slot_point sl_tx);
@@ -99,10 +104,13 @@ private:
   prach_scheduler               prach_sch;
   pucch_allocator_impl          pucch_alloc;
   uci_allocator_impl            uci_alloc;
-  pucch_guardbands_scheduler    pucch_guard_sch;
   paging_scheduler              pg_sch;
 
-  std::atomic<bool> stopped = false;
+  /// Reference to UE scheduler whose DU cell group contains this cell.
+  ue_scheduler::unique_cell_ptr ue_sched;
+
+  /// Current state of the cell.
+  bool active = false;
 };
 
 } // namespace srsran

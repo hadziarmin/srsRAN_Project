@@ -31,6 +31,8 @@
 
 namespace srsran::vrb_to_prb {
 
+enum class mapping_type : uint8_t { non_interleaved = 0, interleaved_n2 = 2, interleaved_n4 = 4 };
+
 /// PDSCH VRB-to-PRB mapping configuration.
 struct configuration {
   /// Indicates the number of RB bundles \f$N_{bundle}\f$. It is set to zero for non-interleaved mapping.
@@ -172,16 +174,16 @@ create_interleaved_common_ss(unsigned N_start_coreset, unsigned N_bwp_i_start, u
 /// \param[in] N_bwp_i_size  BWP \f$i\f$ size\f$N_{BWP,i}^{size}\f$.
 /// \param[in] L_i           RB Bundle size for BWP \f$i\f$ in RBs \f$L_i\f$.
 /// \return An interleaved VRB-to-PRB configuration object.
-inline configuration create_interleaved_other(unsigned N_bwp_i_start, unsigned N_bwp_i_size, unsigned L_i)
+inline configuration create_interleaved_other(unsigned N_bwp_i_start, unsigned N_bwp_i_size, mapping_type L_i)
 {
-  srsran_assert(L_i == 2 || L_i == 4, "Invalid bundle size {}. Valid values are 2 or 4.", L_i);
-  const unsigned nof_bundles       = divide_ceil(N_bwp_i_size + (N_bwp_i_start % L_i), L_i);
+  unsigned L = static_cast<unsigned>(L_i);
+  srsran_assert(L == 2 || L == 4, "Invalid bundle size {}. Valid values are 2 or 4.", L);
+  const unsigned nof_bundles       = divide_ceil(N_bwp_i_size + (N_bwp_i_start % L), L);
   const unsigned coreset_start     = 0;
   const unsigned nof_rbs           = N_bwp_i_size;
-  const unsigned first_bundle_size = L_i - (N_bwp_i_start % L_i);
-  const unsigned other_bundle_size = L_i;
-  const unsigned last_bundle_size =
-      ((N_bwp_i_start + N_bwp_i_size) % L_i) > 0 ? (+N_bwp_i_start + N_bwp_i_size) % L_i : L_i;
+  const unsigned first_bundle_size = L - (N_bwp_i_start % L);
+  const unsigned other_bundle_size = L;
+  const unsigned last_bundle_size  = ((N_bwp_i_start + N_bwp_i_size) % L) > 0 ? (+N_bwp_i_start + N_bwp_i_size) % L : L;
 
   return {nof_bundles, coreset_start, nof_rbs, first_bundle_size, other_bundle_size, last_bundle_size};
 }
@@ -220,12 +222,12 @@ public:
   ///
   /// \param[in] prbs PRB interval to be converted.
   /// \return A VRB interval.
-  prb_interval prb_to_vrb(const prb_interval& prbs) const;
+  vrb_interval prb_to_vrb(const prb_interval& prbs) const;
 
   /// \brief Converts a VRB bitmap to a PRB bitmap.
   ///
-  /// \param[in] bwp_size Size of the BWP where the PRB bitmap is defined.
-  /// \param[in] vrbs VRB bitmap to be converted.
+  /// \param[in] bwp_size BWP size in CRB as \f$N_{BWP,i}^{size}\f$.
+  /// \param[in] vrbs     VRB bitmap to be converted.
   /// \return A PRB bitmap.
   prb_bitmap vrb_to_prb(unsigned bwp_size, const vrb_bitmap& vrbs) const;
 
@@ -237,11 +239,20 @@ public:
 
   /// \brief Converts a VRB bitmap to a CRB bitmap.
   ///
-  /// \param[in] bwp_start Start of the BWP where the PRB bitmap is defined.
-  /// \param[in] bwp_size Size of the BWP where the PRB bitmap is defined.
+  /// \param[in] bwp_start   Lowest CRB index of the BWP relative to CRB0 (PointA) as \f$N_{BWP,i}^{start}\f$.
+  /// \param[in] bwp_size    BWP size in CRB as \f$N_{BWP,i}^{size}\f$.
   /// \param[in] vrbs VRB bitmap to be converted.
   /// \return A CRB bitmap.
   crb_bitmap vrb_to_crb(unsigned bwp_start, unsigned bwp_size, const vrb_bitmap& vrbs) const;
+
+  /// \brief Converts a VRB bitmap to CRB indices.
+  ///
+  /// \param[in] bwp_start   Lowest CRB index of the BWP relative to CRB0 (PointA) as \f$N_{BWP,i}^{start}\f$.
+  /// \param[in] bwp_size    BWP size in CRB as \f$N_{BWP,i}^{size}\f$.
+  /// \param[in] vrbs VRB bitmap to be converted.
+  /// \return A CRB vector of indices.
+  static_vector<uint16_t, MAX_NOF_PRBS>
+  vrb_to_crb_indices(unsigned bwp_start, unsigned bwp_size, const vrb_bitmap& vrbs) const;
 
   /// \brief Equal comparison between two non-interleaved VRB-to-PRB mappers.
   bool operator==(const non_interleaved_mapping& other) const { return config == other.config; }
@@ -297,6 +308,15 @@ public:
   /// \param[in] vrbs VRB bitmap to be converted.
   /// \return A CRB bitmap.
   crb_bitmap vrb_to_crb(unsigned bwp_start, unsigned bwp_size, const vrb_bitmap& vrbs) const;
+
+  /// \brief Converts a VRB bitmap to CRB indices.
+  ///
+  /// \param[in] bwp_start Start of the BWP where the PRB bitmap is defined.
+  /// \param[in] bwp_size Size of the BWP where the PRB bitmap is defined.
+  /// \param[in] vrbs VRB bitmap to be converted.
+  /// \return A CRB vector of indices.
+  static_vector<uint16_t, MAX_NOF_PRBS>
+  vrb_to_crb_indices(unsigned bwp_start, unsigned bwp_size, const vrb_bitmap& vrbs) const;
 
   /// Equal comparison between two interleaved VRB-to-PRB mappers.
   bool operator==(const interleaved_mapping& other) const { return config == other.config; }

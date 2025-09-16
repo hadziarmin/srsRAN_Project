@@ -56,14 +56,16 @@ public:
   virtual void handle_connection_loss() = 0;
 };
 
-/// This interface notifies the reception of new NGAP messages over the NGAP interface.
+/// This interface notifies the transmission of new NGAP messages over the NGAP interface.
 class ngap_message_notifier
 {
 public:
   virtual ~ngap_message_notifier() = default;
 
-  /// This callback is invoked on each received NGAP message.
-  virtual void on_new_message(const ngap_message& msg) = 0;
+  /// \brief This callback is invoked on each transmitted NGAP message.
+  /// \param[in] msg The NGAP message to transmit.
+  /// \return True if the message was successfully transmitted, false otherwise.
+  [[nodiscard]] virtual bool on_new_message(const ngap_message& msg) = 0;
 };
 
 /// Handle NGAP interface management procedures as defined in TS 38.413 section 8.7.
@@ -136,7 +138,7 @@ public:
   /// \brief Notify the CU-CP about a security context
   /// \param[in] sec_ctxt The received security context
   /// \return True if the security context was successfully initialized, false otherwise
-  virtual bool init_security_context(security::security_context sec_ctxt) = 0;
+  virtual bool init_security_context(const security::security_context& sec_ctxt) = 0;
 
   /// \brief Check if security is enabled
   [[nodiscard]] virtual bool is_security_enabled() const = 0;
@@ -163,7 +165,7 @@ public:
   /// \param[in] ue_index Index of the UE.
   /// \param[in] sec_ctxt The received security context.
   /// \return True if the security context was successfully initialized, false otherwise.
-  virtual bool on_handover_request_received(ue_index_t ue_index, security::security_context sec_ctxt) = 0;
+  virtual bool on_handover_request_received(ue_index_t ue_index, const security::security_context& sec_ctxt) = 0;
 
   /// \brief Notify about the reception of a new Initial Context Setup Request.
   /// \param[in] request The received Initial Context Setup Request.
@@ -269,6 +271,8 @@ public:
   virtual async_task<ngap_handover_preparation_response>
   handle_handover_preparation_request(const ngap_handover_preparation_request& msg) = 0;
 
+  virtual void handle_ul_ran_status_transfer(const ngap_ul_ran_status_transfer& ul_status_transfer) = 0;
+
   /// \brief Handle the reception of an inter CU handove related RRC Reconfiguration Complete.
   virtual void
   handle_inter_cu_ho_rrc_recfg_complete(const ue_index_t ue_index, const nr_cell_global_id_t& cgi, const tac_t tac) = 0;
@@ -296,6 +300,23 @@ public:
   /// \returns True if the update was successful, false otherwise.
   virtual bool
   update_ue_index(ue_index_t new_ue_index, ue_index_t old_ue_index, ngap_cu_cp_ue_notifier& new_ue_notifier) = 0;
+};
+
+/// Interface to map between ue_index and amf_ue_id.
+class ngap_ue_id_translator
+{
+public:
+  virtual ~ngap_ue_id_translator() = default;
+
+  /// \brief Map amf_ue_id to ue_index.
+  /// \param[in] amf_ue_id of a given UE.
+  /// \param[out] ue_index of the given UE.
+  virtual ue_index_t get_ue_index(const amf_ue_id_t& amf_ue_id) = 0;
+
+  /// \brief Map ue_index to amf_ue_id.
+  /// \param[in] ue_index of a given UE.
+  /// \param[out] amf_ue_id of the given UE.
+  virtual amf_ue_id_t get_amf_ue_id(const ue_index_t& ue_index) = 0;
 };
 
 /// Interface used to capture the NGAP metrics from a single CU-CP NGAP.
@@ -329,7 +350,8 @@ class ngap_interface : public ngap_message_handler,
                        public ngap_ue_control_manager,
                        public ngap_statistics_handler,
                        public ngap_ue_context_removal_handler,
-                       public ngap_metrics_handler
+                       public ngap_metrics_handler,
+                       public ngap_ue_id_translator
 {
 public:
   virtual ~ngap_interface() = default;
@@ -344,6 +366,7 @@ public:
   virtual ngap_metrics_handler&                        get_metrics_handler()                      = 0;
   virtual ngap_statistics_handler&                     get_ngap_statistics_handler()              = 0;
   virtual ngap_ue_context_removal_handler&             get_ngap_ue_context_removal_handler()      = 0;
+  virtual ngap_ue_id_translator&                       get_ngap_ue_id_translator()                = 0;
 };
 
 } // namespace srs_cu_cp

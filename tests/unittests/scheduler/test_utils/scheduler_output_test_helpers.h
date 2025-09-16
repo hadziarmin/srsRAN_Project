@@ -46,9 +46,10 @@ std::vector<grant_info> get_pdcch_grant_info(pci_t pci, const pdcch_dl_informati
 
 /// Extract PDCCH grant info of UL PDCCH allocation.
 ///
+/// \param pci Cell PCI.
 /// \param pdcch UL PDCCH allocation parameters.
 /// \return Parameters of the grant.
-std::vector<grant_info> get_pdcch_grant_info(const pdcch_ul_information& pdcch);
+std::vector<grant_info> get_pdcch_grant_info(pci_t pci, const pdcch_ul_information& pdcch);
 
 /// Extract PDSCH grant info of SIB allocation.
 ///
@@ -74,7 +75,9 @@ grant_info get_pdsch_grant_info(const bwp_downlink_common& bwp_cfg, const dl_pag
 ///
 /// \param ue_grant UE PDSCH grant parameters.
 /// \return Parameters of the grant.
-grant_info get_pdsch_grant_info(const bwp_downlink_common& bwp_cfg, const dl_msg_alloc& ue_grant);
+std::pair<grant_info, grant_info> get_pdsch_grant_info(const bwp_downlink_common& bwp_cfg,
+                                                       const dl_msg_alloc&        ue_grant,
+                                                       vrb_to_prb::mapping_type   interleaving_bundle_size);
 
 /// \brief Creates a list with the grants allocated in a cell DL resource grid. This includes PDCCHs, PDSCHs and SSB.
 std::vector<test_grant_info> get_dl_grants(const cell_configuration& cell_cfg, const dl_sched_result& dl_res);

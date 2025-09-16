@@ -388,4 +388,22 @@ bool test_helpers::is_valid_f1ap_positioning_measurement_request(const f1ap_mess
   return true;
 }
 
+bool test_helpers::is_valid_f1ap_positioning_measurement_response(const f1ap_message& msg)
+{
+  return true;
+}
+
+bool test_helpers::is_valid_f1ap_positioning_measurement_failure(const f1ap_message& msg)
+{
+  return true;
+}
+
 #endif // SRSRAN_HAS_ENTERPRISE
+
+bool test_helpers::is_valid_gnb_cu_configuration_update(const f1ap_message& msg)
+{
+  TRUE_OR_RETURN(msg.pdu.type().value == asn1::f1ap::f1ap_pdu_c::types_opts::init_msg);
+  TRUE_OR_RETURN(msg.pdu.init_msg().value.type().value ==
+                 asn1::f1ap::f1ap_elem_procs_o::init_msg_c::types_opts::gnb_cu_cfg_upd);
+  return true;
+}

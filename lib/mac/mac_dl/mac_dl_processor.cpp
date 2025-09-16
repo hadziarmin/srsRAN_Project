@@ -37,8 +37,8 @@ bool mac_dl_processor::has_cell(du_cell_index_t cell_index) const
   return cell_index < MAX_NOF_DU_CELLS and cells[cell_index] != nullptr;
 }
 
-mac_cell_controller& mac_dl_processor::add_cell(const mac_cell_creation_request&     cell_cfg_req,
-                                                const mac_cell_metric_report_config& metrics_cfg)
+mac_cell_controller& mac_dl_processor::add_cell(const mac_cell_creation_request& cell_cfg_req,
+                                                mac_cell_config_dependencies     dependencies)
 {
   srsran_assert(not has_cell(cell_cfg_req.cell_index), "Overwriting existing cell is invalid.");
 
@@ -48,12 +48,12 @@ mac_cell_controller& mac_dl_processor::add_cell(const mac_cell_creation_request&
                                            sched,
                                            rnti_table,
                                            cfg.phy_notifier.get_cell(cell_cfg_req.cell_index),
-                                           cfg.cell_exec_mapper.executor(cell_cfg_req.cell_index),
+                                           cfg.cell_exec_mapper.mac_cell_executor(cell_cfg_req.cell_index),
                                            cfg.cell_exec_mapper.slot_ind_executor(cell_cfg_req.cell_index),
                                            cfg.ctrl_exec,
                                            cfg.pcap,
                                            cfg.timers,
-                                           metrics_cfg);
+                                           std::move(dependencies));
 
   return *cells[cell_cfg_req.cell_index];
 }
@@ -82,9 +82,9 @@ async_task<void> mac_dl_processor::remove_ue(const mac_ue_delete_request& reques
   return cells[request.cell_index]->remove_ue(request);
 }
 
-async_task<bool> mac_dl_processor::addmod_bearers(du_ue_index_t                                  ue_index,
-                                                  du_cell_index_t                                pcell_index,
-                                                  const std::vector<mac_logical_channel_config>& logical_channels)
+async_task<bool> mac_dl_processor::addmod_bearers(du_ue_index_t                          ue_index,
+                                                  du_cell_index_t                        pcell_index,
+                                                  span<const mac_logical_channel_config> logical_channels)
 {
   if (not has_cell(pcell_index)) {
     return launch_no_op_task<bool>(false);

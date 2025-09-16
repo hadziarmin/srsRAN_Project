@@ -29,11 +29,13 @@
 #include "srsran/asn1/f1ap/common.h"
 #include "srsran/asn1/f1ap/f1ap_pdu_contents_ue.h"
 #include "srsran/du/du_cell_config_helpers.h"
+#include "srsran/du/du_high/du_high_clock_controller.h"
 #include "srsran/du/du_high/du_high_factory.h"
 #include "srsran/du/du_high/du_qos_config_helpers.h"
 #include "srsran/mac/mac_cell_timing_context.h"
 #include "srsran/scheduler/config/scheduler_expert_config_factory.h"
 #include "srsran/support/error_handling.h"
+#include "srsran/support/io/io_broker_factory.h"
 #include "srsran/support/test_utils.h"
 
 using namespace srsran;
@@ -47,8 +49,12 @@ class dummy_du_f1ap_tx_pdu_notifier : public f1ap_message_notifier
 public:
   dummy_du_f1ap_tx_pdu_notifier(task_executor&                         test_exec_,
                                 std::vector<f1ap_message>&             last_f1ap_msgs_,
-                                std::unique_ptr<f1ap_message_notifier> du_rx_notifier_) :
-    test_exec(test_exec_), last_f1ap_msgs(last_f1ap_msgs_), du_rx_notifier(std::move(du_rx_notifier_))
+                                std::unique_ptr<f1ap_message_notifier> du_rx_notifier_,
+                                bool                                   cell_start_on_f1_setup_) :
+    test_exec(test_exec_),
+    last_f1ap_msgs(last_f1ap_msgs_),
+    du_rx_notifier(std::move(du_rx_notifier_)),
+    cell_start_on_f1_setup(cell_start_on_f1_setup_)
   {
   }
 
@@ -57,7 +63,7 @@ public:
     if (msg.pdu.type().value == asn1::f1ap::f1ap_pdu_c::types_opts::init_msg) {
       if (msg.pdu.init_msg().proc_code == ASN1_F1AP_ID_F1_SETUP) {
         // Auto-schedule CU response.
-        du_rx_notifier->on_new_message(test_helpers::generate_f1_setup_response(msg));
+        du_rx_notifier->on_new_message(test_helpers::generate_f1_setup_response(msg, cell_start_on_f1_setup));
       } else if (msg.pdu.init_msg().proc_code == ASN1_F1AP_ID_F1_REMOVAL) {
         // Auto-schedule CU response.
         du_rx_notifier->on_new_message(test_helpers::generate_f1_removal_response(msg));
@@ -78,6 +84,7 @@ public:
   task_executor&                         test_exec;
   std::vector<f1ap_message>&             last_f1ap_msgs;
   std::unique_ptr<f1ap_message_notifier> du_rx_notifier;
+  const bool                             cell_start_on_f1_setup;
 };
 
 } // namespace
@@ -142,12 +149,16 @@ void phy_cell_test_dummy::on_cell_results_completion(slot_point slot)
   cached_ul_res  = {};
 }
 
-dummy_f1c_test_client::dummy_f1c_test_client(task_executor& test_exec_) : test_exec(test_exec_) {}
+dummy_f1c_test_client::dummy_f1c_test_client(task_executor& test_exec_, bool cell_start_on_f1_setup_) :
+  cell_start_on_f1_setup(cell_start_on_f1_setup_), test_exec(test_exec_)
+{
+}
 
 std::unique_ptr<f1ap_message_notifier>
 dummy_f1c_test_client::handle_du_connection_request(std::unique_ptr<f1ap_message_notifier> du_rx_pdu_notifier)
 {
-  return std::make_unique<dummy_du_f1ap_tx_pdu_notifier>(test_exec, last_f1ap_msgs, std::move(du_rx_pdu_notifier));
+  return std::make_unique<dummy_du_f1ap_tx_pdu_notifier>(
+      test_exec, last_f1ap_msgs, std::move(du_rx_pdu_notifier), cell_start_on_f1_setup);
 }
 
 static void init_loggers()
@@ -184,6 +195,9 @@ du_high_configuration srs_du::create_du_high_configuration(const du_high_env_sim
       cfg.ran.cells.back().pucch_cfg = params.pucch_cfg.value();
     }
     cfg.ran.mac_cfg.configs.push_back({10000, 10000, 10000});
+    if (params.srs_period.has_value()) {
+      cfg.ran.cells.back().srs_cfg.srs_period = params.srs_period;
+    }
   }
 
   cfg.ran.qos       = config_helpers::make_default_du_qos_config_list(/* warn_on_drop */ true, 0);
@@ -198,12 +212,14 @@ du_high_configuration srs_du::create_du_high_configuration(const du_high_env_sim
 }
 
 du_high_env_simulator::du_high_env_simulator(du_high_env_sim_params params) :
-  du_high_env_simulator(create_du_high_configuration(params))
+  du_high_env_simulator(create_du_high_configuration(params), params.active_cells_on_start)
 {
 }
 
-du_high_env_simulator::du_high_env_simulator(const du_high_configuration& du_hi_cfg_) :
-  cu_notifier(workers.test_worker),
+du_high_env_simulator::du_high_env_simulator(const du_high_configuration& du_hi_cfg_, bool active_cells_on_start) :
+  broker(create_io_broker(io_broker_type::epoll)),
+  timer_ctrl(srs_du::create_du_high_clock_controller(timers, *broker, *workers.time_exec)),
+  cu_notifier(workers.test_worker, active_cells_on_start),
   du_metrics(workers.test_worker),
   du_high_cfg(du_hi_cfg_),
   du_hi_dependencies([this]() {
@@ -214,7 +230,7 @@ du_high_env_simulator::du_high_env_simulator(const du_high_configuration& du_hi_
     dependencies.f1u_gw      = &cu_up_sim;
     dependencies.du_notifier = &du_metrics;
     dependencies.phy_adapter = &phy;
-    dependencies.timers      = &timers;
+    dependencies.timer_ctrl  = timer_ctrl.get();
     dependencies.mac_p       = &mac_pcap;
     dependencies.rlc_p       = &rlc_pcap;
     return dependencies;
@@ -235,6 +251,8 @@ du_high_env_simulator::du_high_env_simulator(const du_high_configuration& du_hi_
 du_high_env_simulator::~du_high_env_simulator()
 {
   du_hi->stop();
+
+  timer_ctrl.reset();
 
   // Stop workers before starting to take down other components.
   workers.stop();
@@ -457,12 +475,12 @@ bool du_high_env_simulator::run_ue_context_setup(rnti_t rnti)
 
   // DU receives UE Context Setup Request.
   cu_notifier.last_f1ap_msgs.clear();
-  f1ap_message msg =
-      test_helpers::create_ue_context_setup_request(*u.cu_ue_id,
-                                                    u.du_ue_id,
-                                                    u.srbs[LCID_SRB1].next_pdcp_sn++,
-                                                    {drb_id_t::drb1},
-                                                    {plmn_identity::test_value(), nr_cell_identity::create(0).value()});
+  f1ap_message msg = test_helpers::generate_ue_context_setup_request(
+      *u.cu_ue_id,
+      u.du_ue_id,
+      u.srbs[LCID_SRB1].next_pdcp_sn++,
+      {drb_id_t::drb1},
+      {plmn_identity::test_value(), nr_cell_identity::create(0).value()});
   asn1::f1ap::ue_context_setup_request_s& cmd = msg.pdu.init_msg().value.ue_context_setup_request();
   cmd->drbs_to_be_setup_list[0]
       .value()
@@ -632,6 +650,11 @@ void du_high_env_simulator::handle_slot_results(du_cell_index_t cell_index)
       if (uci_ind.has_value()) {
         this->du_hi->get_control_info_handler(cell_index).handle_uci(uci_ind.value());
       }
+    }
+
+    if (not ul_res.srss.empty()) {
+      mac_srs_indication_message srs_ind = test_helpers::create_srs_indication(sl_rx, ul_res.srss);
+      this->du_hi->get_control_info_handler(cell_index).handle_srs(srs_ind);
     }
   }
 }

@@ -94,8 +94,7 @@ public:
   /// An assertion is triggered if the result would be a non-integer number of samples.
   ///
   /// \tparam U Any data type that can be converted to \c value_type.
-  /// \param[in] scs      Subcarrier spacing in hertz.
-  /// \param[in] dft_size DFT size corresponding to the subcarrier spacing.
+  /// \param[in] sampling_rate_Hz_ Sampling rate in Hertz.
   /// \return The time value in samples.
   template <typename U>
   constexpr value_type to_samples(U sampling_rate_Hz_) const
@@ -108,6 +107,20 @@ public:
                   (sampling_rate_Hz % 1000000) / 10000,
                   value);
     return (value * sampling_rate_Hz) / (SCS_REF_HZ * N_F_REF * KAPPA);
+  }
+
+  /// \brief Gets the time expressed as a number of samples for the given sampling rate rounding to the nearest integer.
+  /// \tparam U Any data type that can be converted to \c double.
+  /// \param[in] sampling_rate_Hz_ Sampling rate in Hertz.
+  /// \return The time value in samples.
+  template <typename U>
+  constexpr value_type to_nearest_samples(U sampling_rate_Hz_) const
+  {
+    static_assert(std::is_convertible<U, double>::value, "Invalid type.");
+    double sampling_rate_Hz = static_cast<double>(sampling_rate_Hz_);
+    double nof_samples =
+        static_cast<double>(value * sampling_rate_Hz) / static_cast<double>(SCS_REF_HZ * N_F_REF * KAPPA);
+    return static_cast<value_type>(std::round(nof_samples));
   }
 
   /// \brief Gets the time expressed in units of \f$T_{\textup{A}}\f$.
@@ -276,7 +289,7 @@ public:
 /// \param dft_size DFT size.
 /// \return The sampling rate in hertz from the given SCS and DFT size.
 template <typename U = double>
-inline constexpr U to_sampling_rate_Hz(subcarrier_spacing scs, unsigned dft_size)
+constexpr U to_sampling_rate_Hz(subcarrier_spacing scs, unsigned dft_size)
 {
   static_assert(std::is_convertible<unsigned, U>::value, "Invalid type.");
   return static_cast<U>(scs_to_khz(scs) * 1000 * dft_size);

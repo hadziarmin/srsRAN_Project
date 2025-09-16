@@ -49,6 +49,7 @@ protected:
     n3_allocator     = std::make_unique<dummy_gtpu_teid_pool>();
     f1u_allocator    = std::make_unique<dummy_gtpu_teid_pool>();
     ngu_session_mngr = std::make_unique<dummy_ngu_session_manager>();
+    e1ap             = std::make_unique<dummy_e1ap>();
 
     // create DUT object
     ue_inactivity_timer = timers_factory.create_timer();
@@ -70,6 +71,7 @@ protected:
                                                                  timers_factory,
                                                                  timers_factory,
                                                                  timers_factory,
+                                                                 *e1ap,
                                                                  *f1u_gw,
                                                                  *ngu_session_mngr,
                                                                  *n3_allocator,
@@ -97,6 +99,7 @@ protected:
   dummy_inner_f1u_bearer                                      f1u_bearer;
   std::unique_ptr<dummy_f1u_gateway>                          f1u_gw;
   std::unique_ptr<ngu_session_manager>                        ngu_session_mngr;
+  std::unique_ptr<e1ap_interface>                             e1ap;
   std::unique_ptr<dummy_gtpu_teid_pool>                       n3_allocator;
   std::unique_ptr<dummy_gtpu_teid_pool>                       f1u_allocator;
   std::unique_ptr<pdu_session_manager_ctrl>                   pdu_session_mng;
@@ -106,7 +109,7 @@ protected:
   cu_up_ue_logger                                             logger{"CU-UP", {MIN_UE_INDEX}};
 };
 
-/// Fixture class for PDU session manager tests with default network interface config
+/// Fixture class for PDU session manager tests with default network interface config.
 class pdu_session_manager_test : public pdu_session_manager_test_base, public ::testing::Test
 {
 protected:
@@ -117,10 +120,10 @@ protected:
 inline e1ap_pdu_session_res_to_setup_item
 generate_pdu_session_res_to_setup_item(pdu_session_id_t psi, drb_id_t drb_id, qos_flow_id_t qfi, five_qi_t five_qi)
 {
-  // prepare request
+  // Prepare request.
   e1ap_pdu_session_res_to_setup_item pdu_session_setup_item;
   pdu_session_setup_item.pdu_session_id                        = psi;
-  pdu_session_setup_item.pdu_session_type                      = "ipv4";
+  pdu_session_setup_item.pdu_session_type                      = pdu_session_type_t::ipv4;
   pdu_session_setup_item.snssai.sst                            = slice_service_type{1};
   pdu_session_setup_item.snssai.sd                             = slice_differentiator::create(10203).value();
   pdu_session_setup_item.security_ind.integrity_protection_ind = integrity_protection_indication_t::not_needed;
@@ -164,7 +167,7 @@ generate_pdu_session_res_to_setup_item(pdu_session_id_t psi, drb_id_t drb_id, qo
 inline e1ap_pdu_session_res_to_modify_item generate_pdu_session_res_to_modify_item_to_remove_drb(pdu_session_id_t psi,
                                                                                                  drb_id_t drb_id)
 {
-  // prepare modification request (to remove bearers)
+  // Prepare modification request (to remove bearers).
   e1ap_pdu_session_res_to_modify_item pdu_session_modify_item;
   pdu_session_modify_item.pdu_session_id = psi;
 
@@ -176,7 +179,7 @@ inline e1ap_pdu_session_res_to_modify_item generate_pdu_session_res_to_modify_it
 inline e1ap_pdu_session_res_to_modify_item generate_pdu_session_res_to_modify_item_to_modify_drb(pdu_session_id_t psi,
                                                                                                  drb_id_t drb_id)
 {
-  // prepare modification request (to remove bearers)
+  // Prepare modification request (to remove bearers).
   e1ap_pdu_session_res_to_modify_item pdu_session_modify_item;
   pdu_session_modify_item.pdu_session_id = psi;
 
@@ -192,7 +195,7 @@ generate_pdu_session_res_to_modify_item_to_setup_drb(pdu_session_id_t           
                                                      std::vector<qos_flow_id_t> qfi_list,
                                                      five_qi_t                  five_qi)
 {
-  // prepare modification request (to add further bearers)
+  // Prepare modification request (to add further bearers).
   e1ap_pdu_session_res_to_modify_item pdu_session_modify_item;
   pdu_session_modify_item.pdu_session_id = psi;
 

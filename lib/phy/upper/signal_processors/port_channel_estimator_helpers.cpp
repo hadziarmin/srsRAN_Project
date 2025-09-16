@@ -70,6 +70,7 @@ static const std::array<int, port_channel_estimator_average_impl::MAX_V_PILOTS> 
     create_index_array<port_channel_estimator_average_impl::MAX_V_PILOTS>();
 
 namespace {
+
 /// \brief Provides access to customized raised-cosine filters.
 ///
 /// Besides the FIR coefficients, the class also provides access to a correction term to be applied to the tails of the
@@ -103,8 +104,8 @@ public:
       n += stride;
     }
     // Normalize the filter so that the sum of its coefficients is 1 and the tail correction coefficients accordingly.
-    srsvec::sc_prod(rc_filter, 1 / total, rc_filter);
-    srsvec::sc_prod(tail_correction, total, tail_correction);
+    srsvec::sc_prod(rc_filter, rc_filter, 1 / total);
+    srsvec::sc_prod(tail_correction, tail_correction, total);
 
     tail_correction = tail_correction.subspan(nof_coefs_out / 2, nof_coefs_out / 2);
   }
@@ -116,9 +117,10 @@ public:
 
 private:
   // Auxiliary buffers.
-  std::array<float, MAX_FILTER_LENGTH>     filter_coefs;
-  std::array<float, MAX_FILTER_LENGTH / 2> correction_coefs;
+  std::array<float, MAX_FILTER_LENGTH> filter_coefs;
+  std::array<float, MAX_FILTER_LENGTH> correction_coefs;
 };
+
 } // namespace
 
 /// \brief Computes some virtual pilots to improve estimation at the edges.
@@ -154,7 +156,7 @@ unsigned srsran::extract_layer_hop_rx_pilots(dmrs_symbol_list&                  
   // Select DM-RS pattern.
   const port_channel_estimator::layer_dmrs_pattern& pattern = cfg.dmrs_pattern[i_layer];
 
-  const prb_bitmap& hop_rb_mask = (hop == 0) ? pattern.rb_mask : pattern.rb_mask2;
+  const crb_bitmap& hop_rb_mask = (hop == 0) ? pattern.rb_mask : pattern.rb_mask2;
 
   // Extract hop PRB positions.
   unsigned i_prb_begin   = hop_rb_mask.find_lowest();
@@ -249,7 +251,7 @@ float srsran::estimate_time_alignment(const re_measurement<cf_t>&               
                                       subcarrier_spacing                                scs,
                                       time_alignment_estimator&                         ta_estimator)
 {
-  const prb_bitmap& hop_rb_mask = (hop == 0) ? pattern.rb_mask : pattern.rb_mask2;
+  const crb_bitmap& hop_rb_mask = (hop == 0) ? pattern.rb_mask : pattern.rb_mask2;
 
   unsigned nof_symbols = pilots_lse.size().nof_symbols;
   unsigned nof_slices  = pilots_lse.size().nof_slices;
@@ -341,8 +343,10 @@ static void compute_v_pilots(span<cf_t> out, span<const float> in_abs, span<cons
   }
 
   for (unsigned i_pilot = 0; i_pilot != nof_v_pilots; ++i_pilot) {
-    int i_virtual = static_cast<int>(i_pilot) + v_offset;
-    out[i_pilot]  = std::polar(slope_abs * i_virtual + intercept_abs, slope_arg * i_virtual + intercept_arg);
+    int   i_virtual = static_cast<int>(i_pilot) + v_offset;
+    float rho       = slope_abs * i_virtual + intercept_abs;
+    out[i_pilot]    = std::polar(std::abs(rho),
+                              slope_arg * i_virtual + intercept_arg + ((rho > 0) ? 0.0F : static_cast<float>(M_PI)));
   }
 }
 

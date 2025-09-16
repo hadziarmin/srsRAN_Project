@@ -118,6 +118,7 @@ class dummy_ru_error_notifier : public ru_error_notifier
 public:
   void on_late_downlink_message(const ru_error_context& context) override {}
   void on_late_uplink_message(const ru_error_context& context) override {}
+  void on_late_prach_message(const ru_error_context& context) override {}
 };
 } // namespace
 
@@ -264,11 +265,11 @@ static void parse_args(int argc, char** argv)
       case 'h':
       default:
         usage(argv[0]);
-        ::exit(0);
+        std::exit(0);
     }
     if (invalid_arg) {
       usage(argv[0]);
-      ::exit(0);
+      std::exit(0);
     }
     nof_antennas_dl = test_params.dl_port_id.size();
     nof_antennas_ul = test_params.ul_port_id.size();
@@ -379,7 +380,7 @@ private:
   {
     socket_fd = ::socket(AF_PACKET, SOCK_RAW | SOCK_NONBLOCK, IPPROTO_RAW);
     if (socket_fd < 0) {
-      report_error("Unable to open raw socket for Ethernet gateway: {}", strerror(errno));
+      report_error("Unable to open raw socket for Ethernet gateway: {}", ::strerror(errno));
     }
 
     // Get the index of loopback interface.
@@ -405,7 +406,9 @@ class dummy_rx_symbol_notifier : public ru_uplink_plane_rx_symbol_notifier
 {
 public:
   // See interface for documentation.
-  void on_new_uplink_symbol(const ru_uplink_rx_symbol_context& context, const shared_resource_grid& grid) override
+  void on_new_uplink_symbol(const ru_uplink_rx_symbol_context& context,
+                            const shared_resource_grid&        grid,
+                            bool                               is_valid) override
   {
     srsran_assert(grid, "Invalid grid.");
   }
@@ -892,8 +895,7 @@ struct worker_manager {
       const std::string exec_name = "ru_timing_exec";
 
       const single_worker ru_worker{name,
-                                    {concurrent_queue_policy::lockfree_spsc, 4},
-                                    {{exec_name}},
+                                    {exec_name, concurrent_queue_policy::lockfree_spsc, 4},
                                     std::chrono::microseconds{1},
                                     os_thread_realtime_priority::max() - 0};
       if (!exec_mng.add_execution_context(create_execution_context(ru_worker))) {
@@ -910,8 +912,7 @@ struct worker_manager {
 
       const worker_pool ru_pool{name,
                                 nof_workers,
-                                {{concurrent_queue_policy::locking_mpmc, task_worker_queue_size}},
-                                {{exec_name}},
+                                {{exec_name, concurrent_queue_policy::locking_mpmc, task_worker_queue_size}},
                                 std::chrono::microseconds(0),
                                 os_thread_realtime_priority::max() - 5,
                                 {}};
@@ -927,8 +928,7 @@ struct worker_manager {
       const std::string exec_name = "ru_txrx_exec";
 
       const single_worker ru_worker{name,
-                                    {concurrent_queue_policy::lockfree_mpmc, task_worker_queue_size},
-                                    {{exec_name}},
+                                    {exec_name, concurrent_queue_policy::lockfree_mpmc, task_worker_queue_size},
                                     std::chrono::microseconds{5},
                                     os_thread_realtime_priority::max() - 1};
       if (!exec_mng.add_execution_context(create_execution_context(ru_worker))) {
@@ -943,8 +943,7 @@ struct worker_manager {
       const std::string exec_name = "ru_rx_exec";
 
       const single_worker ru_worker{name,
-                                    {concurrent_queue_policy::lockfree_mpmc, task_worker_queue_size},
-                                    {{exec_name}},
+                                    {exec_name, concurrent_queue_policy::lockfree_mpmc, task_worker_queue_size},
                                     std::chrono::microseconds{15},
                                     os_thread_realtime_priority::max() - 5};
       if (!exec_mng.add_execution_context(create_execution_context(ru_worker))) {
@@ -959,8 +958,7 @@ struct worker_manager {
       const std::string exec_name = "du_sim_exec";
 
       const single_worker du_sim_worker{name,
-                                        {concurrent_queue_policy::locking_mpmc, 2},
-                                        {{exec_name}},
+                                        {exec_name, concurrent_queue_policy::locking_mpmc, 2},
                                         std::nullopt,
                                         os_thread_realtime_priority::max() - 10};
       if (!exec_mng.add_execution_context(create_execution_context(du_sim_worker))) {
@@ -975,8 +973,7 @@ struct worker_manager {
       const std::string exec_name = "ru_sim_exec";
 
       const single_worker ru_sim_worker{name,
-                                        {concurrent_queue_policy::lockfree_spsc, task_worker_queue_size},
-                                        {{exec_name}},
+                                        {exec_name, concurrent_queue_policy::lockfree_spsc, task_worker_queue_size},
                                         std::chrono::microseconds{5},
                                         os_thread_realtime_priority::max() - 2};
       if (!exec_mng.add_execution_context(create_execution_context(ru_sim_worker))) {

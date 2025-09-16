@@ -52,7 +52,7 @@ void pdcch_modulator_impl::modulate(span<cf_t> d_pdcch, span<const uint8_t> b_ha
 
   // Apply scaling to conform power.
   if (std::isnormal(scaling)) {
-    srsvec::sc_prod(d_pdcch, scaling, d_pdcch);
+    srsvec::sc_prod(d_pdcch, d_pdcch, scaling);
   }
 }
 
@@ -63,7 +63,7 @@ void pdcch_modulator_impl::map(resource_grid_writer& grid, const re_buffer_reade
 
   // Create PDCCH mapping pattern.
   re_pattern pattern;
-  pattern.prb_mask = config.rb_mask;
+  pattern.crb_mask = config.rb_mask;
   pattern.symbols.fill(config.start_symbol_index, config.start_symbol_index + config.duration);
   pattern.re_mask = re_mask;
 

@@ -45,7 +45,7 @@ public:
     /// Reference point for PDCCH DMRS \e k in RBs.
     unsigned reference_point_k_rb;
     /// Indicates the PRB used for the PDCCH transmission. The bit at position zero corresponds to CRB0.
-    prb_bitmap rb_mask;
+    crb_bitmap rb_mask;
     /// CORESET start symbol index.
     unsigned start_symbol_index;
     /// CORESET duration in symbols.
@@ -61,7 +61,7 @@ public:
   /// Default destructor.
   virtual ~dmrs_pdcch_processor() = default;
 
-  /// \brief Generates and maps DMRS for PDCCH according to TS 38.211 section 7.4.1.3.
+  /// \brief Generates and maps DMRS for PDCCH according to TS38.211 Section 7.4.1.3.
   ///
   /// \param[out] grid   Resource grid writer interface.
   /// \param[in] config  Required configuration to generate and map the signal.

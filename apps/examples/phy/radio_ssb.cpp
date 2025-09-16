@@ -394,7 +394,7 @@ static void parse_args(int argc, char** argv)
       case 'h':
       default:
         usage(argv[0]);
-        exit(-1);
+        std::exit(-1);
     }
   }
 
@@ -422,7 +422,7 @@ static radio_configuration::radio create_radio_configuration()
 
   radio_config.clock.clock      = radio_configuration::to_clock_source(clock_source);
   radio_config.clock.sync       = radio_configuration::to_clock_source(sync_source);
-  radio_config.sampling_rate_hz = srate.to_Hz<double>();
+  radio_config.sampling_rate_Hz = srate.to_Hz<double>();
   radio_config.otw_format       = otw_format;
   radio_config.tx_mode          = radio_configuration::transmission_mode::continuous;
   radio_config.power_ramping_us = 0.0F;
@@ -435,7 +435,7 @@ static radio_configuration::radio create_radio_configuration()
     for (unsigned port_id = 0; port_id != nof_ports; ++port_id) {
       // Create channel configuration and append it to the previous ones.
       radio_configuration::channel tx_ch_config;
-      tx_ch_config.freq.center_frequency_hz = dl_center_freq;
+      tx_ch_config.freq.center_frequency_Hz = dl_center_freq;
       tx_ch_config.gain_dB                  = tx_gain;
       if (!tx_channel_args.empty()) {
         tx_ch_config.args = tx_channel_args[sector_id * nof_ports + port_id];
@@ -443,7 +443,7 @@ static radio_configuration::radio create_radio_configuration()
       tx_stream_config.channels.emplace_back(tx_ch_config);
 
       radio_configuration::channel rx_ch_config;
-      rx_ch_config.freq.center_frequency_hz = rx_freq;
+      rx_ch_config.freq.center_frequency_Hz = rx_freq;
       rx_ch_config.gain_dB                  = rx_gain;
       if (!rx_channel_args.empty()) {
         rx_ch_config.args = rx_channel_args[sector_id * nof_ports + port_id];
@@ -456,39 +456,44 @@ static radio_configuration::radio create_radio_configuration()
   return radio_config;
 }
 
-lower_phy_configuration create_lower_phy_configuration(task_executor*                rx_task_executor,
-                                                       task_executor*                tx_task_executor,
-                                                       task_executor*                ul_task_executor,
-                                                       task_executor*                dl_task_executor,
-                                                       task_executor*                prach_task_executor,
-                                                       lower_phy_error_notifier*     error_notifier,
-                                                       lower_phy_metrics_notifier*   metrics_notifier,
-                                                       lower_phy_rx_symbol_notifier* rx_symbol_notifier,
-                                                       lower_phy_timing_notifier*    timing_notifier,
-                                                       baseband_gateway&             bb_gateway,
-                                                       srslog::basic_logger*         logger)
+static lower_phy_configuration create_lower_phy_configuration(task_executor*                rx_task_executor,
+                                                              task_executor*                tx_task_executor,
+                                                              task_executor*                ul_task_executor,
+                                                              task_executor*                dl_task_executor,
+                                                              task_executor*                prach_task_executor,
+                                                              lower_phy_error_notifier*     error_notifier,
+                                                              lower_phy_metrics_notifier*   metrics_notifier,
+                                                              lower_phy_rx_symbol_notifier* rx_symbol_notifier,
+                                                              lower_phy_timing_notifier*    timing_notifier,
+                                                              baseband_gateway&             bb_gateway,
+                                                              srslog::basic_logger*         logger)
 {
   lower_phy_configuration phy_config;
-  phy_config.srate                          = srate;
-  phy_config.scs                            = scs;
-  phy_config.max_processing_delay_slots     = max_processing_delay_slots;
-  phy_config.time_alignment_calibration     = 0;
-  phy_config.system_time_throttling         = 0.0F;
-  phy_config.ta_offset                      = n_ta_offset::n0;
-  phy_config.cp                             = cy_prefix;
-  phy_config.dft_window_offset              = 0.5F;
-  phy_config.bb_gateway                     = &bb_gateway;
-  phy_config.rx_symbol_notifier             = rx_symbol_notifier;
-  phy_config.timing_notifier                = timing_notifier;
-  phy_config.error_notifier                 = error_notifier;
-  phy_config.metric_notifier                = metrics_notifier;
-  phy_config.rx_task_executor               = rx_task_executor;
-  phy_config.tx_task_executor               = tx_task_executor;
-  phy_config.ul_task_executor               = ul_task_executor;
-  phy_config.dl_task_executor               = dl_task_executor;
-  phy_config.prach_async_executor           = prach_task_executor;
-  phy_config.baseband_rx_buffer_size_policy = lower_phy_baseband_buffer_size_policy::half_slot;
-  phy_config.baseband_tx_buffer_size_policy = lower_phy_baseband_buffer_size_policy::half_slot;
+  phy_config.srate                             = srate;
+  phy_config.scs                               = scs;
+  phy_config.max_processing_delay_slots        = max_processing_delay_slots;
+  phy_config.time_alignment_calibration        = 0;
+  phy_config.system_time_throttling            = 0.0F;
+  phy_config.max_nof_prach_concurrent_requests = 1;
+  phy_config.ta_offset                         = n_ta_offset::n0;
+  phy_config.cp                                = cy_prefix;
+  phy_config.bandwidth_rb                      = bw_rb;
+  phy_config.dl_freq_hz                        = dl_center_freq;
+  phy_config.ul_freq_hz                        = rx_freq;
+  phy_config.nof_tx_ports                      = nof_ports;
+  phy_config.nof_rx_ports                      = nof_ports;
+  phy_config.dft_window_offset                 = 0.5F;
+  phy_config.bb_gateway                        = &bb_gateway;
+  phy_config.rx_symbol_notifier                = rx_symbol_notifier;
+  phy_config.timing_notifier                   = timing_notifier;
+  phy_config.error_notifier                    = error_notifier;
+  phy_config.metric_notifier                   = metrics_notifier;
+  phy_config.rx_task_executor                  = rx_task_executor;
+  phy_config.tx_task_executor                  = tx_task_executor;
+  phy_config.ul_task_executor                  = ul_task_executor;
+  phy_config.dl_task_executor                  = dl_task_executor;
+  phy_config.prach_async_executor              = prach_task_executor;
+  phy_config.baseband_rx_buffer_size_policy    = lower_phy_baseband_buffer_size_policy::half_slot;
 
   // Amplitude controller configuration.
   phy_config.amplitude_config.full_scale_lin  = full_scale_amplitude;
@@ -499,16 +504,6 @@ lower_phy_configuration create_lower_phy_configuration(task_executor*           
   // back-off to account for signal PAPR.
   phy_config.amplitude_config.input_gain_dB = -convert_power_to_dB(bw_rb * NRE) - baseband_backoff_dB;
 
-  for (unsigned sector_id = 0; sector_id != nof_sectors; ++sector_id) {
-    lower_phy_sector_description sector_config;
-    sector_config.bandwidth_rb = bw_rb;
-    sector_config.dl_freq_hz   = dl_center_freq;
-    sector_config.ul_freq_hz   = rx_freq;
-    sector_config.nof_tx_ports = nof_ports;
-    sector_config.nof_rx_ports = nof_ports;
-    phy_config.sectors.push_back(sector_config);
-  }
-
   // Logger for amplitude control metrics.
   phy_config.logger = logger;
 
@@ -517,6 +512,9 @@ lower_phy_configuration create_lower_phy_configuration(task_executor*           
 
 int main(int argc, char** argv)
 {
+  // Default task worker queue size.
+  static constexpr unsigned default_queue_size = 2048;
+
   // Set interrupt and cleanup signal handlers.
   register_interrupt_signal_handler(interrupt_signal_handler);
   register_cleanup_signal_handler(cleanup_signal_handler);
@@ -545,7 +543,7 @@ int main(int argc, char** argv)
   std::unique_ptr<task_executor>                                prach_task_executor;
   if (thread_profile_name == "single") {
     workers.emplace("async_thread", std::make_unique<task_worker>("async_thread", 2 * nof_sectors * nof_ports));
-    workers.emplace("low_phy", std::make_unique<task_worker>("low_phy", 4));
+    workers.emplace("low_phy", std::make_unique<task_worker>("low_phy", default_queue_size));
 
     async_task_executor = make_task_executor_ptr(*workers["async_thread"]);
     rx_task_executor    = make_task_executor_ptr(*workers["low_phy"]);
@@ -561,8 +559,10 @@ int main(int argc, char** argv)
     low_dl_affinity.set(1);
 
     workers.emplace("async_thread", std::make_unique<task_worker>("async_thread", 2 * nof_sectors * nof_ports));
-    workers.emplace("low_phy_ul", std::make_unique<task_worker>("low_phy_ul", 128, low_ul_priority, low_ul_affinity));
-    workers.emplace("low_phy_dl", std::make_unique<task_worker>("low_phy_dl", 128, low_dl_priority, low_dl_affinity));
+    workers.emplace("low_phy_ul",
+                    std::make_unique<task_worker>("low_phy_ul", default_queue_size, low_ul_priority, low_ul_affinity));
+    workers.emplace("low_phy_dl",
+                    std::make_unique<task_worker>("low_phy_dl", default_queue_size, low_dl_priority, low_dl_affinity));
 
     async_task_executor = make_task_executor_ptr(*workers["async_thread"]);
     rx_task_executor    = make_task_executor_ptr(*workers["low_phy_ul"]);
@@ -584,9 +584,12 @@ int main(int argc, char** argv)
     low_dl_affinity.set(3);
     workers.emplace("async_thread", std::make_unique<task_worker>("async_thread", 2 * nof_sectors * nof_ports));
     workers.emplace("low_rx", std::make_unique<task_worker>("low_rx", 1, low_rx_priority, low_rx_affinity));
-    workers.emplace("low_tx", std::make_unique<task_worker>("low_tx", 128, low_tx_priority, low_tx_affinity));
-    workers.emplace("low_dl", std::make_unique<task_worker>("low_dl", 128, low_dl_priority, low_dl_affinity));
-    workers.emplace("low_ul", std::make_unique<task_worker>("low_ul", 128, low_ul_priority, low_ul_affinity));
+    workers.emplace("low_tx",
+                    std::make_unique<task_worker>("low_tx", default_queue_size, low_tx_priority, low_tx_affinity));
+    workers.emplace("low_dl",
+                    std::make_unique<task_worker>("low_dl", default_queue_size, low_dl_priority, low_dl_affinity));
+    workers.emplace("low_ul",
+                    std::make_unique<task_worker>("low_ul", default_queue_size, low_ul_priority, low_ul_affinity));
 
     async_task_executor = make_task_executor_ptr(*workers["async_thread"]);
     rx_task_executor    = make_task_executor_ptr(*workers["low_rx"]);
@@ -712,11 +715,11 @@ int main(int argc, char** argv)
   // Calculate starting time.
   double                     delay_s      = 0.1;
   baseband_gateway_timestamp current_time = radio->read_current_time();
-  baseband_gateway_timestamp start_time = current_time + static_cast<uint64_t>(delay_s * radio_config.sampling_rate_hz);
+  baseband_gateway_timestamp start_time = current_time + static_cast<uint64_t>(delay_s * radio_config.sampling_rate_Hz);
 
   // Start processing.
   radio->start(start_time);
-  lower_phy_instance->get_controller().start(start_time);
+  lower_phy_instance->get_controller().start(start_time, false);
 
   // Receive and transmit per block basis.
   for (unsigned slot_count = 0; slot_count != duration_slots && !stop; ++slot_count) {

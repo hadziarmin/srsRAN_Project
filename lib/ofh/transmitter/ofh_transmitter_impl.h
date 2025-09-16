@@ -27,6 +27,8 @@
 #include "ofh_transmitter_metrics_collector_impl.h"
 #include "ofh_transmitter_ota_symbol_task_dispatcher.h"
 #include "ofh_uplink_request_handler_impl.h"
+#include "ofh_uplink_request_handler_task_dispatcher.h"
+#include "srsran/ofh/ofh_controller.h"
 #include "srsran/ofh/transmitter/ofh_transmitter.h"
 #include "srsran/ofh/transmitter/ofh_transmitter_configuration.h"
 
@@ -41,6 +43,8 @@ struct transmitter_impl_dependencies {
   error_notifier* err_notifier = nullptr;
   /// Transmitter task executor.
   task_executor* executor = nullptr;
+  /// Downlink task executor.
+  task_executor* dl_executor = nullptr;
   /// Data flow for downlink Control-Plane.
   std::unique_ptr<data_flow_cplane_scheduling_commands> dl_df_cplane;
   /// Data flow for downlink User-Plane.
@@ -55,14 +59,29 @@ struct transmitter_impl_dependencies {
   std::shared_ptr<uplink_notified_grid_symbol_repository> notifier_symbol_repo;
   /// Ethernet transmitter.
   std::unique_ptr<ether::transmitter> eth_transmitter;
-  /// Ethernet frame pool.
-  std::shared_ptr<ether::eth_frame_pool> frame_pool;
+  /// Ethernet frame pool downlink Control-Plane.
+  std::shared_ptr<ether::eth_frame_pool> frame_pool_dl_cp;
+  /// Ethernet frame pool uplink Control-Plane.
+  std::shared_ptr<ether::eth_frame_pool> frame_pool_ul_cp;
+  /// Ethernet frame pool downlink User-Plane.
+  std::shared_ptr<ether::eth_frame_pool> frame_pool_dl_up;
 };
 
-class transmitter_impl : public transmitter
+class transmitter_impl : public transmitter, public operation_controller
 {
 public:
   transmitter_impl(const transmitter_config& config, transmitter_impl_dependencies&& dependencies);
+
+  ~transmitter_impl() override { stop(); }
+
+  // See interface for documentation.
+  void start() override;
+
+  // See interface for documentation.
+  void stop() override;
+
+  // See interface for documentation.
+  operation_controller& get_operation_controller() override { return *this; }
 
   // See interface for documentation.
   uplink_request_handler& get_uplink_request_handler() override;
@@ -78,6 +97,7 @@ public:
 private:
   downlink_handler_impl                  dl_handler;
   uplink_request_handler_impl            ul_request_handler;
+  uplink_request_handler_task_dispatcher ul_task_dispatcher;
   message_transmitter_impl               msg_transmitter;
   transmitter_ota_symbol_task_dispatcher ota_dispatcher;
   transmitter_metrics_collector_impl     metrics_collector;

@@ -53,41 +53,6 @@ static bool validate_pcap_configs(const du_high_unit_config& config)
   return true;
 }
 
-static bool validate_expert_execution_unit_config(const du_high_unit_config&       config,
-                                                  const os_sched_affinity_bitmask& available_cpus)
-{
-  // Configure more cells for expert execution than the number of cells is an error.
-  if (config.expert_execution_cfg.cell_affinities.size() != config.cells_cfg.size()) {
-    fmt::print(
-        "Using different number of cells for DU high expert execution '{}' than the number of defined cells '{}'\n",
-        config.expert_execution_cfg.cell_affinities.size(),
-        config.cells_cfg.size());
-
-    return false;
-  }
-
-  auto validate_cpu_range = [](const os_sched_affinity_bitmask& allowed_cpus_mask,
-                               const os_sched_affinity_bitmask& mask,
-                               const std::string&               name) {
-    auto invalid_cpu_ids = mask.subtract(allowed_cpus_mask);
-    if (not invalid_cpu_ids.empty()) {
-      fmt::print(
-          "CPU cores {} selected in '{}' option doesn't belong to the available cpuset.\n", invalid_cpu_ids, name);
-      return false;
-    }
-
-    return true;
-  };
-
-  for (const auto& cell : config.expert_execution_cfg.cell_affinities) {
-    if (!validate_cpu_range(available_cpus, cell.l2_cell_cpu_cfg.mask, "l2_cell_cpus")) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
 template <typename id_type>
 static bool validate_rlc_am_unit_config(id_type id, const du_high_unit_rlc_am_config& config)
 {
@@ -288,7 +253,9 @@ static bool validate_rv_sequence(span<const unsigned> rv_sequence)
 }
 
 /// Validates the given PDSCH cell application configuration. Returns true on success, otherwise false.
-static bool validate_pdsch_cell_unit_config(const du_high_unit_pdsch_config& config, unsigned cell_bw_crbs)
+static bool validate_pdsch_cell_unit_config(const du_high_unit_pdsch_config& config,
+                                            unsigned                         cell_bw_crbs,
+                                            unsigned                         nof_antennas_dl)
 {
   if (config.min_ue_mcs > config.max_ue_mcs) {
     fmt::print("Invalid UE MCS range (i.e., [{}, {}]). The min UE MCS must be less than or equal to the max UE MCS.\n",
@@ -314,10 +281,9 @@ static bool validate_pdsch_cell_unit_config(const du_high_unit_pdsch_config& con
   }
 
   if (config.end_rb <= config.start_rb) {
-    fmt::print(
-        "Invalid RB allocation range [{}, {}) for UE PDSCHs. The start_rb must be less or equal to the end_rb.\n",
-        config.start_rb,
-        config.end_rb);
+    fmt::print("Invalid RB allocation range [{}, {}) for UE PDSCHs. The start_rb must be less than the end_rb.\n",
+               config.start_rb,
+               config.end_rb);
     return false;
   }
 
@@ -328,17 +294,24 @@ static bool validate_pdsch_cell_unit_config(const du_high_unit_pdsch_config& con
     return false;
   }
 
-  if (config.end_rb < config.start_rb) {
-    fmt::print(
-        "Invalid RB allocation range [{}, {}) for UE PDSCHs. The start_rb must be less or equal to the end_rb.\n",
-        config.start_rb,
-        config.end_rb);
-    return false;
-  }
-
   if (config.start_rb >= cell_bw_crbs) {
     fmt::print("Invalid start RB {} for UE PDSCHs. The start_rb must be less than the cell BW", config.start_rb);
     return false;
+  }
+
+  if (config.max_rank.has_value()) {
+    if (*config.max_rank > nof_antennas_dl) {
+      fmt::print("Invalid maximum rank value (i.e., {}). It cannot be greater than number of available downlink "
+                 "antennas (i.e., {}).\n",
+                 *config.max_rank,
+                 nof_antennas_dl);
+      return false;
+    }
+
+    if (*config.max_rank == 0) {
+      fmt::print("Invalid maximum rank value (i.e., {}). It must be a positive non-zero value.\n", *config.max_rank);
+      return false;
+    }
   }
 
   return true;
@@ -390,11 +363,10 @@ validate_pusch_cell_unit_config(const du_high_unit_pusch_config& config, unsigne
     return false;
   }
 
-  if (config.end_rb < config.start_rb) {
-    fmt::print(
-        "Invalid RB allocation range [{}, {}) for UE PUSCHs. The start_rb must be less or equal to the end_rb.\n",
-        config.start_rb,
-        config.end_rb);
+  if (config.end_rb <= config.start_rb) {
+    fmt::print("Invalid RB allocation range [{}, {}) for UE PUSCHs. The start_rb must be less than the end_rb.\n",
+               config.start_rb,
+               config.end_rb);
     return false;
   }
 
@@ -405,18 +377,33 @@ validate_pusch_cell_unit_config(const du_high_unit_pusch_config& config, unsigne
 
   if (min_k1 < config.min_k2) {
     fmt::print("The value min_k2 {} set for PUSCH cannot be greater than the min_k1 {} set for PUCCH config.\n",
-               config.start_rb);
+               config.min_k2,
+               min_k1);
     return false;
   }
 
   return true;
 }
 
+static bool validate_ntn_config(const ntn_config& ntn_cfg)
+{
+  bool valid = true;
+
+  if (const auto* ecef = std::get_if<ecef_coordinates_t>(&ntn_cfg.ephemeris_info)) {
+    if (ecef->position_x == 0 and ecef->position_y == 0 and ecef->position_z == 0 and ecef->velocity_vx == 0 and
+        ecef->velocity_vy == 0 and ecef->velocity_vz == 0) {
+      fmt::print("Ephemeris info has to be provided (in ECEF State Vector or ECI Orbital Elements format).\n");
+      valid = false;
+    }
+  }
+
+  return valid;
+}
+
 /// Validates the given PUCCH cell application configuration. Returns true on success, otherwise false.
 static bool validate_pucch_cell_unit_config(const du_high_unit_base_cell_config& config,
                                             subcarrier_spacing                   scs_common,
-                                            unsigned                             nof_crbs,
-                                            bool                                 ntn)
+                                            unsigned                             nof_crbs)
 {
   const du_high_unit_pucch_config& pucch_cfg = config.pucch_cfg;
   if (not config.csi_cfg.csi_rs_enabled and pucch_cfg.nof_cell_csi_resources > 0) {
@@ -454,7 +441,7 @@ static bool validate_pucch_cell_unit_config(const du_high_unit_base_cell_config&
                get_nof_slots_per_subframe(scs_common));
     return false;
   }
-  if (!ntn) {
+  if (!config.ntn_cfg.has_value()) {
     span<const unsigned> valid_sr_period_slots = mu_to_valid_sr_period_slots_lookup.at(to_numerology_value(scs_common));
     if (std::find(valid_sr_period_slots.begin(), valid_sr_period_slots.end(), sr_period_slots) ==
         valid_sr_period_slots.end()) {
@@ -462,6 +449,10 @@ static bool validate_pucch_cell_unit_config(const du_high_unit_base_cell_config&
                  pucch_cfg.sr_period_msec,
                  sr_period_slots,
                  scs_to_khz(scs_common));
+      return false;
+    }
+  } else {
+    if (!validate_ntn_config(*config.ntn_cfg)) {
       return false;
     }
   }
@@ -532,6 +523,7 @@ static bool validate_pucch_cell_unit_config(const du_high_unit_base_cell_config&
   unsigned       nof_f2_f3_f4_rbs;
   const unsigned nof_res_f2_f3_f4 =
       pucch_cfg.nof_ue_pucch_res_harq_per_set * pucch_cfg.nof_cell_harq_pucch_sets + pucch_cfg.nof_cell_csi_resources;
+  unsigned f2_f3_f4_max_payload = 0U;
   switch (pucch_cfg.set1_format) {
     case pucch_format::FORMAT_2: {
       // The number of symbols per PUCCH resource F2 is not exposed to the DU user interface and set by default to 2.
@@ -551,6 +543,8 @@ static bool validate_pucch_cell_unit_config(const du_high_unit_base_cell_config&
       if (pucch_cfg.f2_intraslot_freq_hopping) {
         nof_f2_f3_f4_rbs = static_cast<unsigned>(std::ceil(static_cast<float>(nof_f2_f3_f4_rbs) / 2.0F)) * 2;
       }
+      f2_f3_f4_max_payload = get_pucch_format2_max_payload(
+          f2_max_rbs, pucch_f2_nof_symbols, to_max_code_rate_float(pucch_cfg.f2_max_code_rate));
     } break;
     case pucch_format::FORMAT_3: {
       // The number of symbols per PUCCH resource is not exposed to the DU user interface; for PUCCH F3, we use all
@@ -575,6 +569,12 @@ static bool validate_pucch_cell_unit_config(const du_high_unit_base_cell_config&
       if (pucch_cfg.f3_intraslot_freq_hopping) {
         nof_f2_f3_f4_rbs = static_cast<unsigned>(std::ceil(static_cast<float>(nof_f2_f3_f4_rbs) / 2.0F)) * 2;
       }
+      f2_f3_f4_max_payload = get_pucch_format3_max_payload(f3_max_rbs,
+                                                           pucch_f3_nof_symbols,
+                                                           to_max_code_rate_float(pucch_cfg.f3_max_code_rate),
+                                                           false,
+                                                           pucch_cfg.f3_additional_dmrs,
+                                                           pucch_cfg.f3_pi2_bpsk);
     } break;
     case pucch_format::FORMAT_4: {
       // The number of symbols per PUCCH resource is not exposed to the DU user interface; for PUCCH F4, we use all
@@ -587,10 +587,28 @@ static bool validate_pucch_cell_unit_config(const du_high_unit_base_cell_config&
       if (pucch_cfg.f4_intraslot_freq_hopping) {
         nof_f2_f3_f4_rbs = static_cast<unsigned>(std::ceil(static_cast<float>(nof_f2_f3_f4_rbs) / 2.0F)) * 2;
       }
+      f2_f3_f4_max_payload = get_pucch_format4_max_payload(pucch_f4_nof_symbols,
+                                                           to_max_code_rate_float(pucch_cfg.f4_max_code_rate),
+                                                           false,
+                                                           pucch_cfg.f4_additional_dmrs,
+                                                           pucch_cfg.f4_pi2_bpsk,
+                                                           static_cast<pucch_f4_occ_len>(pucch_cfg.f4_occ_length));
     } break;
     default:
       fmt::print("Invalid PUCCH format for Set Id 1.\n");
       return false;
+  }
+
+  // Make sure the PUCCH has the minimum required payload for the given number of antennas.
+  if (config.nof_antennas_dl == 1 and f2_f3_f4_max_payload < 4U) {
+    fmt::print("With the given parameters and 1 DL antenna, PUCCH F2 max payload must be at least 4 bits.\n");
+    return false;
+  } else if (config.nof_antennas_dl == 2 and f2_f3_f4_max_payload < 7U) {
+    fmt::print("With the given parameters and 2 DL antennas, PUCCH F2 max payload must be at least 7 bits.\n");
+    return false;
+  } else if (config.nof_antennas_dl == 4 and f2_f3_f4_max_payload < 11U) {
+    fmt::print("With the given parameters and 4 DL antennas, PUCCH F2 max payload must be at least 11 bits.\n");
+    return false;
   }
 
   // Verify the number of RBs for the PUCCH resources does not exceed the BWP size.
@@ -667,10 +685,19 @@ static bool validate_srs_cell_unit_config(const du_high_unit_srs_config& config,
 }
 
 /// Validates the given PUCCH cell application configuration. Returns true on success, otherwise false.
-static bool validate_ul_common_unit_config(const du_high_unit_ul_common_config& config)
+static bool validate_ul_common_unit_config(const du_high_unit_ul_common_config& config, unsigned nof_crbs)
 {
   if (config.max_ul_grants_per_slot <= config.max_pucchs_per_slot) {
     fmt::print("The max number of UL grants per slot should be greater than the maximum number of PUCCH grants.\n");
+    return false;
+  }
+
+  if (config.min_pucch_pusch_prb_distance >= nof_crbs / 2) {
+    fmt::print("The minimum distance between PUCCH and PUSCH PRBs ({}) should be less than half of the BWP size "
+               "({}/2 = {}).\n",
+               config.min_pucch_pusch_prb_distance,
+               nof_crbs,
+               nof_crbs / 2);
     return false;
   }
 
@@ -693,15 +720,17 @@ validate_prach_cell_unit_config(const du_high_unit_prach_config& config, nr_band
 {
   srsran_assert(config.prach_config_index.has_value(), "The PRACH configuration index must be set.");
 
-  auto code =
-      prach_helper::prach_config_index_is_valid(config.prach_config_index.value(), band_helper::get_duplex_mode(band));
+  frequency_range freq_range = band_helper::get_freq_range(band);
+  duplex_mode     dplx_mode  = band_helper::get_duplex_mode(band);
+
+  auto code = prach_helper::prach_config_index_is_valid(config.prach_config_index.value(), freq_range, dplx_mode);
   if (not code.has_value()) {
     fmt::print("{}", code.error());
     return false;
   }
 
   code = prach_helper::zero_correlation_zone_is_valid(
-      config.zero_correlation_zone, config.prach_config_index.value(), band_helper::get_duplex_mode(band));
+      config.zero_correlation_zone, config.prach_config_index.value(), freq_range, dplx_mode);
   if (not code.has_value()) {
     fmt::print("{}", code.error());
     return false;
@@ -791,13 +820,23 @@ static bool validate_tdd_ul_dl_pattern_unit_config(const tdd_ul_dl_pattern_unit_
     return false;
   }
 
-  // NOTE: 1 of the slots in the TDD pattern is the special slot.
-  if (config.nof_dl_slots + config.nof_ul_slots > config.dl_ul_period_slots - 1) {
-    fmt::print("Invalid TDD pattern: the sum of DL and UL slots is not compatible with TDD period.\n");
-    return false;
+  if (config.nof_ul_slots != 0) {
+    // NOTE: 1 of the slots in the TDD pattern is the special slot.
+    if (config.nof_dl_slots + config.nof_ul_slots > config.dl_ul_period_slots - 1) {
+      fmt::print("Invalid TDD pattern: the sum of DL and UL slots is not compatible with TDD period.\n");
+      return false;
+    }
+  } else {
+    // NOTE: If there are only DL slots in the TDD pattern, then the special slot is optional.
+    if (config.nof_dl_slots < config.dl_ul_period_slots - 1 or config.nof_dl_slots > config.dl_ul_period_slots) {
+      fmt::print("Invalid TDD pattern: the number of DL slots is not compatible with the TDD configuration.\n");
+      return false;
+    }
   }
 
   // Extended CP not currently supported: assume 14 symbols per slot; 2 symbols for DL-to-UL switching.
+  // As per "5G-NR in Bullets", Table 352, we consider a number of guard symbols that accommodates both SCS 15kHz and
+  // 30kHz.
   if (config.nof_dl_symbols + config.nof_ul_symbols > NOF_OFDM_SYM_PER_SLOT_NORMAL_CP - 2U) {
     fmt::print("Invalid TDD pattern: the sum of DL and UL symbols in the special slot should not exceed 12.\n");
     return false;
@@ -936,13 +975,28 @@ static bool validate_cell_sib_config(const du_high_unit_base_cell_config& cell_c
 
   const du_high_unit_sib_config& sib_cfg = cell_cfg.sib_cfg;
 
+  // Compute how many slots it takes to transmit all SI messages in sequence.
+  const unsigned all_si_msg_slots = sib_cfg.si_sched_info.size() * sib_cfg.si_window_len_slots;
+
+  // If the SI period of any SI message is shorter than the number of slots required to transmit the SI messages, the
+  // configuration is invalid.
   for (const auto& si_msg : sib_cfg.si_sched_info) {
     const unsigned si_period_slots =
         si_msg.si_period_rf * get_nof_slots_per_subframe(cell_cfg.common_scs) * NOF_SUBFRAMES_PER_FRAME;
-    if (sib_cfg.si_window_len_slots > si_period_slots) {
-      fmt::print("The SI window length in slots {} is larger than the SI message period {}.\n",
-                 sib_cfg.si_window_len_slots,
-                 si_period_slots);
+    if (all_si_msg_slots > si_period_slots) {
+      fmt::print("The SI message period (i.e., {} frames) is too small given the SI window length (i.e., {} slots). "
+                 "Increase the SI period or decrease the SI window length.\n",
+                 si_msg.si_period_rf,
+                 sib_cfg.si_window_len_slots);
+      return false;
+    }
+
+    // Check if SIB19 is included together with any other SIB, which is not allowed.
+    const auto sib19_included = std::find(si_msg.sib_mapping_info.begin(),
+                                          si_msg.sib_mapping_info.end(),
+                                          static_cast<std::underlying_type_t<sib_type>>(sib_type::sib19));
+    if (sib19_included != si_msg.sib_mapping_info.end() && si_msg.sib_mapping_info.size() > 1) {
+      fmt::print("SIB19 cannot be included in the SI messages together with other SIBs.\n");
       return false;
     }
   }
@@ -953,7 +1007,7 @@ static bool validate_cell_sib_config(const du_high_unit_base_cell_config& cell_c
     for (const uint8_t sib_it : si_msg.sib_mapping_info) {
       // si-WindowPosition-r17 is part of release 17 specification only. See TS 38.331, V17.0.0, \c SchedulingInfo2-r17.
       if (sib_it < r17_min_sib_type and si_msg.si_window_position.has_value()) {
-        fmt::print("The SIB{} cannot be configured with SI-window position", sib_it);
+        fmt::print("The SIB{} cannot be configured with SI-window position.\n", sib_it);
         return false;
       }
       sibs_included.push_back(sib_it);
@@ -966,7 +1020,15 @@ static bool validate_cell_sib_config(const du_high_unit_base_cell_config& cell_c
   // Check if there are repeated SIBs in the SI messages.
   const auto duplicate_it = std::adjacent_find(sibs_included.begin(), sibs_included.end());
   if (duplicate_it != sibs_included.end()) {
-    fmt::print("The SIB{} cannot be included more than once in the broadcast SI messages", *duplicate_it);
+    fmt::print("The SIB{} cannot be included more than once in the broadcast SI messages.\n", *duplicate_it);
+    return false;
+  }
+
+  // If NTN-config present, check if SIB19 sched info is provided.
+  const auto sib19_included = std::find(
+      sibs_included.begin(), sibs_included.end(), static_cast<std::underlying_type_t<sib_type>>(sib_type::sib19));
+  if (cell_cfg.ntn_cfg.has_value() and sib19_included == sibs_included.end()) {
+    fmt::print("NTN-Config is present, but SIB19 scheduling information was not provided.\n");
     return false;
   }
 
@@ -986,7 +1048,7 @@ static bool validate_cell_sib_config(const du_high_unit_base_cell_config& cell_c
 }
 
 /// Validates the given cell application configuration. Returns true on success, otherwise false.
-static bool validate_base_cell_unit_config(const du_high_unit_base_cell_config& config, bool ntn)
+static bool validate_base_cell_unit_config(const du_high_unit_base_cell_config& config)
 {
   if (config.pci >= INVALID_PCI) {
     fmt::print("Invalid PCI (i.e. {}). PCI ranges from 0 to {}.\n", config.pci, MAX_PCI);
@@ -1041,7 +1103,7 @@ static bool validate_base_cell_unit_config(const du_high_unit_base_cell_config& 
   const unsigned nof_crbs =
       band_helper::get_n_rbs_from_bw(config.channel_bw_mhz, config.common_scs, band_helper::get_freq_range(band));
 
-  if (!validate_pdsch_cell_unit_config(config.pdsch_cfg, nof_crbs)) {
+  if (!validate_pdsch_cell_unit_config(config.pdsch_cfg, nof_crbs, config.nof_antennas_dl)) {
     return false;
   }
 
@@ -1049,7 +1111,7 @@ static bool validate_base_cell_unit_config(const du_high_unit_base_cell_config& 
     return false;
   }
 
-  if (!validate_pucch_cell_unit_config(config, config.common_scs, nof_crbs, ntn)) {
+  if (!validate_pucch_cell_unit_config(config, config.common_scs, nof_crbs)) {
     return false;
   }
 
@@ -1057,7 +1119,7 @@ static bool validate_base_cell_unit_config(const du_high_unit_base_cell_config& 
     return false;
   }
 
-  if (!validate_ul_common_unit_config(config.ul_common_cfg)) {
+  if (!validate_ul_common_unit_config(config.ul_common_cfg, nof_crbs)) {
     return false;
   }
 
@@ -1084,17 +1146,17 @@ static bool validate_base_cell_unit_config(const du_high_unit_base_cell_config& 
   return true;
 }
 
-static bool validate_cell_unit_config(const du_high_unit_cell_config& config, bool ntn)
+static bool validate_cell_unit_config(const du_high_unit_cell_config& config)
 {
-  return validate_base_cell_unit_config(config.cell, ntn);
+  return validate_base_cell_unit_config(config.cell);
 }
 
 /// Validates the given list of cell application configuration. Returns true on success, otherwise false.
-static bool validate_cells_unit_config(span<const du_high_unit_cell_config> config, const gnb_id_t& gnb_id, bool ntn)
+static bool validate_cells_unit_config(span<const du_high_unit_cell_config> config, const gnb_id_t& gnb_id)
 {
   tac_t tac = config[0].cell.tac;
   for (const auto& cell : config) {
-    if (!validate_cell_unit_config(cell, ntn)) {
+    if (!validate_cell_unit_config(cell)) {
       return false;
     }
     if (cell.cell.tac != tac) {
@@ -1110,8 +1172,8 @@ static bool validate_cells_unit_config(span<const du_high_unit_cell_config> conf
     const auto band          = cell.cell.band.value_or(band_helper::get_band_from_dl_arfcn(cell.cell.dl_f_ref_arfcn));
     bool       is_unlicensed = band_helper::is_unlicensed_band(band);
     // Check if the RA Response Window (in ms) is within the limits for licensed and unlicensed bands.
-    unsigned int max_ra_resp_window = is_unlicensed ? 40 : 10;
-    unsigned int ra_resp_window_ms =
+    unsigned max_ra_resp_window = is_unlicensed ? 40 : 10;
+    unsigned ra_resp_window_ms =
         cell.cell.prach_cfg.ra_resp_window.value() >> to_numerology_value(cell.cell.common_scs);
     if (ra_resp_window_ms > max_ra_resp_window) {
       fmt::print("RA Response Window ({}sl -> {}ms) must be smaller than {}ms in {} bands.\n",
@@ -1185,53 +1247,6 @@ static bool validate_test_mode_unit_config(const du_high_unit_config& config)
   }
 
   return true;
-}
-
-static bool validate_ntn_config(const ntn_config& ntn_cfg)
-{
-  bool valid = true;
-
-  if (ntn_cfg.cell_specific_koffset > 1023) {
-    fmt::print("Cell specific koffset must be in range [0, 1023].\n");
-    valid = false;
-  }
-  if (ntn_cfg.distance_threshold.has_value()) {
-    if (ntn_cfg.distance_threshold.value() > 1000) {
-      fmt::print("Distance threshold must be in range [0, 1000].\n");
-      valid = false;
-    }
-  }
-  if (ntn_cfg.epoch_time.has_value()) {
-    if (ntn_cfg.epoch_time.value().sfn > 65535) {
-      fmt::print("Epoch time SFN must be in range [0, 65535].\n");
-      valid = false;
-    }
-    if (ntn_cfg.epoch_time.value().subframe_number > 9) {
-      fmt::print("Epoch time subframe number must be in range [0, 9].\n");
-      valid = false;
-    }
-  }
-  if (ntn_cfg.k_mac.has_value()) {
-    if (ntn_cfg.k_mac.value() > 512) {
-      fmt::print("K_MAC must be in range [0, 512].\n");
-      valid = false;
-    }
-  }
-  if (ntn_cfg.ta_info.has_value()) {
-    if (ntn_cfg.ta_info.value().ta_common > 66485757) {
-      fmt::print("TA common must be in range [0, 66485757].\n");
-      valid = false;
-    }
-    if (std::abs(ntn_cfg.ta_info.value().ta_common_drift) > 257303) {
-      fmt::print("TA common drift must be in range [-257303, 257303].\n");
-      valid = false;
-    }
-    if (ntn_cfg.ta_info.value().ta_common_drift_variant > 28949) {
-      fmt::print("TA common drift variant must be in range [0, 28949].\n");
-      valid = false;
-    }
-  }
-  return valid;
 }
 
 template <typename id_type>
@@ -1411,15 +1426,9 @@ static bool validate_qos_config(span<const du_high_unit_qos_config> config)
   return true;
 }
 
-bool srsran::validate_du_high_config(const du_high_unit_config& config, const os_sched_affinity_bitmask& available_cpus)
+bool srsran::validate_du_high_config(const du_high_unit_config& config)
 {
-  bool ntn = false;
-  if (config.ntn_cfg.has_value()) {
-    if (config.ntn_cfg.has_value()) {
-      ntn = true;
-    }
-  }
-  if (!validate_cells_unit_config(config.cells_cfg, config.gnb_id, ntn)) {
+  if (!validate_cells_unit_config(config.cells_cfg, config.gnb_id)) {
     return false;
   }
 
@@ -1431,18 +1440,8 @@ bool srsran::validate_du_high_config(const du_high_unit_config& config, const os
     return false;
   }
 
-  if (!validate_expert_execution_unit_config(config, available_cpus)) {
-    return false;
-  }
-
   if (!validate_qos_config(config.qos_cfg)) {
     return false;
-  }
-
-  if (config.ntn_cfg.has_value()) {
-    if (!validate_ntn_config(config.ntn_cfg.value())) {
-      return false;
-    }
   }
 
   if (!validate_pcap_configs(config)) {

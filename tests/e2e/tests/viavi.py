@@ -47,7 +47,11 @@ from .steps.kpis import get_kpis, KPIs
 from .steps.stub import _stop_stub, GNB_STARTUP_TIMEOUT, handle_start_error, stop
 
 _OMIT_VIAVI_FAILURE_LIST = ["authentication"]
-_FLAKY_ERROR_LIST = ["Error creating the pod", "Viavi API call timed out"]
+_FLAKY_ERROR_LIST = [
+    "Timeout reached while reserving and/or waiting for pods to be ready",
+    "Error creating the pod",
+    "Viavi API call timed out",
+]
 _GNB_STOP_TIMEOUT = 15  # When timeout reached, retina gets GDB backtrace and sends sigkill. 0 means no timeout
 
 
@@ -68,6 +72,7 @@ class _ViaviConfiguration:
     expected_ul_bitrate: float = 0
     expected_dl_bitrate: float = 0
     expected_nof_kos: float = 0  # Infinity value is represented in a float
+    expected_max_late_harqs: int = 0
     warning_as_errors: bool = True
     warning_allowlist: List[str] = field(default_factory=list)
 
@@ -106,6 +111,7 @@ def load_yaml_config(config_filename: str) -> List[_ViaviConfiguration]:
                 retina_params=test_declaration.get("retina_params", {}),
                 expected_dl_bitrate=test_declaration["expected_dl_bitrate"],
                 expected_ul_bitrate=test_declaration["expected_ul_bitrate"],
+                expected_max_late_harqs=test_declaration["expected_max_late_harqs"],
                 expected_nof_kos=test_declaration["expected_nof_kos"],
                 warning_as_errors=test_declaration["warning_as_errors"],
                 warning_allowlist=test_declaration.get("warning_allowlist", []),
@@ -122,6 +128,8 @@ def _convert_extra_config_into_command(extra_config: dict) -> str:
     for key, value in sorted(extra_config.items(), key=lambda item: isinstance(item[1], dict)):
         if isinstance(value, dict):
             cmd_args += f"{key} " + _convert_extra_config_into_command(value)
+        elif value is None:
+            cmd_args += f"{key} "
         else:
             cmd_args += f"--{key}={value} "
     return cmd_args
@@ -163,6 +171,10 @@ def viavi_manual_gnb_arguments(request):
 
 
 @mark.viavi_manual
+@mark.flaky(
+    reruns=2,
+    only_rerun=_FLAKY_ERROR_LIST,
+)
 # pylint: disable=too-many-arguments,too-many-positional-arguments, too-many-locals
 def test_viavi_manual(
     capsys: pytest.CaptureFixture[str],
@@ -173,6 +185,7 @@ def test_viavi_manual(
     # Clients
     gnb: GNBStub,
     viavi: Viavi,
+    metrics_server: MetricServerInfo,
     # Test info
     viavi_manual_campaign_filename: str,  # pylint: disable=redefined-outer-name
     viavi_manual_test_name: str,  # pylint: disable=redefined-outer-name
@@ -188,10 +201,10 @@ def test_viavi_manual(
     Runs a test using Viavi
     """
     test_declaration = get_viavi_configuration_from_testname(
-        viavi_manual_campaign_filename,
-        viavi_manual_test_name,
-        viavi_manual_test_timeout,
-        viavi_manual_gnb_arguments,
+        campaign_filename=viavi_manual_campaign_filename,
+        test_name=viavi_manual_test_name,
+        timeout=viavi_manual_test_timeout,
+        gnb_arguments=viavi_manual_gnb_arguments,
     )
 
     _test_viavi(
@@ -203,7 +216,7 @@ def test_viavi_manual(
         # Clients
         gnb=gnb,
         viavi=viavi,
-        metrics_server=None,
+        metrics_server=metrics_server,
         # Test info
         metrics_summary=None,
         test_declaration=test_declaration,
@@ -382,9 +395,7 @@ def _test_viavi(
         },
     }
     if metrics_server is not None:
-        configure_metric_server_for_gnb(
-            retina_manager=retina_manager, retina_data=retina_data, metrics_server=metrics_server
-        )
+        configure_metric_server_for_gnb(retina_manager=retina_manager, metrics_server=metrics_server)
 
     retina_manager.parse_configuration(retina_data.test_config)
     retina_manager.push_all_config()
@@ -424,20 +435,24 @@ def _test_viavi(
 
     # Wait until end
     try:
-        info = viavi.wait_until_running_campaign_finishes(test_declaration.test_timeout)
-        if info.status is not CampaignStatusEnum.PASS:
-            pytest.fail(f"Viavi Test Failed: {info.message}")
-        # Final stop
-        stop(
-            (),
-            gnb,
-            None,
-            retina_data,
-            gnb_stop_timeout=gnb_stop_timeout,
-            log_search=log_search,
-            warning_as_errors=test_declaration.warning_as_errors,
-            fail_if_kos=False,
-        )
+        info = viavi.wait_until_running_campaign_teardown(test_declaration.test_timeout)
+        try:
+            # Final stop
+            logging.info("Stopping GNB")
+            stop(
+                ue_array=(),
+                gnb=gnb,
+                fivegc=None,
+                retina_data=retina_data,
+                gnb_stop_timeout=gnb_stop_timeout,
+                log_search=log_search,
+                warning_as_errors=test_declaration.warning_as_errors,
+                fail_if_kos=False,
+            )
+        finally:
+            info = viavi.wait_until_running_campaign_finishes(test_declaration.test_timeout)
+            if info.status is not CampaignStatusEnum.PASS:
+                pytest.fail(f"Viavi Test Failed: {info.message}")
 
     # This except and the finally should be inside the request, but the campaign_name makes it complicated
     except (TimeoutError, KeyboardInterrupt):
@@ -453,7 +468,12 @@ def _test_viavi(
             logging.info("Downloading Viavi report")
             viavi.download_directory(report_folder, Path(test_log_folder).joinpath("viavi"))
             _, gnb_error_count = _stop_stub(
-                gnb, "GNB", retina_data, gnb_stop_timeout, log_search, test_declaration.warning_as_errors
+                stub=gnb,
+                name="GNB",
+                retina_data=retina_data,
+                timeout=gnb_stop_timeout,
+                log_search=log_search,
+                warning_as_errors=test_declaration.warning_as_errors,
             )
             check_metrics_criteria(
                 test_configuration=test_declaration,
@@ -472,6 +492,7 @@ def _test_viavi(
 # Helper functions
 ################################################################################
 def check_metrics_criteria(
+    *,  # This enforces keyword-only arguments
     test_configuration: _ViaviConfiguration,
     gnb: GNBStub,
     viavi: Viavi,
@@ -487,33 +508,80 @@ def check_metrics_criteria(
     # Check metrics
     viavi_kpis: ViaviKPIs = viavi.get_test_kpis()
     viavi_kpis.print_procedure_failures(_OMIT_VIAVI_FAILURE_LIST)
-    kpis: KPIs = get_kpis(gnb, viavi_kpis=viavi_kpis, metrics_summary=metrics_summary)
+    kpis: KPIs = get_kpis(du_or_gnb_array=[gnb], viavi_kpis=viavi_kpis, metrics_summary=metrics_summary)
 
     criteria_result = [
         _create_viavi_result(
-            "DL bitrate", kpis.dl_brate_aggregate, operator.gt, test_configuration.expected_dl_bitrate
+            criteria_name="DL bitrate",
+            current=kpis.dl_brate_aggregate,
+            operator_method=operator.gt,
+            expected=test_configuration.expected_dl_bitrate,
         ),
         _create_viavi_result(
-            "UL bitrate", kpis.ul_brate_aggregate, operator.gt, test_configuration.expected_ul_bitrate
+            criteria_name="UL bitrate",
+            current=kpis.ul_brate_aggregate,
+            operator_method=operator.gt,
+            expected=test_configuration.expected_ul_bitrate,
         ),
-        _create_viavi_result("DL KOs (gnb)", kpis.nof_ko_dl, operator.lt, test_configuration.expected_nof_kos),
         _create_viavi_result(
-            "DL KOs (viavi)",
-            viavi_kpis.dl_data.num_tbs_errors if viavi_kpis.dl_data.num_tbs_errors is not None else 0,
-            operator.lt,
-            test_configuration.expected_nof_kos,
+            criteria_name="DL KOs (gnb)",
+            current=kpis.nof_ko_dl,
+            operator_method=operator.le,
+            expected=test_configuration.expected_nof_kos,
         ),
-        _create_viavi_result("UL KOs (gnb)", kpis.nof_ko_ul, operator.lt, test_configuration.expected_nof_kos),
         _create_viavi_result(
-            "UL KOs (viavi)",
-            viavi_kpis.ul_data.num_tbs_nack if viavi_kpis.ul_data.num_tbs_nack is not None else 0,
-            operator.lt,
-            test_configuration.expected_nof_kos,
+            criteria_name="DL KOs (viavi)",
+            current=viavi_kpis.dl_data.num_tbs_errors if viavi_kpis.dl_data.num_tbs_errors is not None else 0,
+            operator_method=operator.le,
+            expected=test_configuration.expected_nof_kos,
         ),
-        _create_viavi_result("Errors" + (" & warnings" if warning_as_errors else ""), gnb_error_count, operator.eq, 0),
-        _create_viavi_result("Viavi Warnings", len(viavi_kpis.warning_array), operator.lt, float("inf")),
         _create_viavi_result(
-            "Procedure table", viavi_kpis.get_number_of_procedure_failures(_OMIT_VIAVI_FAILURE_LIST), operator.eq, 0
+            criteria_name="UL KOs (gnb)",
+            current=kpis.nof_ko_ul,
+            operator_method=operator.le,
+            expected=test_configuration.expected_nof_kos,
+        ),
+        _create_viavi_result(
+            criteria_name="UL KOs (viavi)",
+            current=viavi_kpis.ul_data.num_tbs_nack if viavi_kpis.ul_data.num_tbs_nack is not None else 0,
+            operator_method=operator.le,
+            expected=test_configuration.expected_nof_kos,
+        ),
+        _create_viavi_result(
+            criteria_name="Late DL HARQs (gnb)",
+            current=kpis.max_late_dl_harqs,
+            operator_method=operator.le,
+            expected=test_configuration.expected_max_late_harqs,
+        ),
+        _create_viavi_result(
+            criteria_name="Late UL HARQs (gnb)",
+            current=kpis.max_late_ul_harqs,
+            operator_method=operator.le,
+            expected=test_configuration.expected_max_late_harqs,
+        ),
+        _create_viavi_result(
+            criteria_name="Error Indications",
+            current=kpis.nof_error_indications,
+            operator_method=operator.eq,
+            expected=0,
+        ),
+        _create_viavi_result(
+            criteria_name="Errors" + (" & warnings" if warning_as_errors else ""),
+            current=gnb_error_count,
+            operator_method=operator.eq,
+            expected=0,
+        ),
+        _create_viavi_result(
+            criteria_name="Viavi Warnings",
+            current=len(viavi_kpis.warning_array),
+            operator_method=operator.lt,
+            expected=float("inf"),
+        ),
+        _create_viavi_result(
+            criteria_name="Procedure table",
+            current=viavi_kpis.get_number_of_procedure_failures(_OMIT_VIAVI_FAILURE_LIST),
+            operator_method=operator.eq,
+            expected=0,
         ),
     ]
 
@@ -527,6 +595,7 @@ def check_metrics_criteria(
 
 
 def _create_viavi_result(
+    *,  # This enforces keyword-only arguments
     criteria_name: str,
     current: float,
     operator_method: Callable,
@@ -584,6 +653,7 @@ def create_table(results: List[_ViaviResult], capsys):
 
 
 def check_criteria(
+    *,  # This enforces keyword-only arguments
     current: float,
     expected: float,
     operator_method: Callable[[float, float], bool],
@@ -613,7 +683,7 @@ def get_str_number_criteria(number_criteria: float) -> str:
 
 
 def get_viavi_configuration_from_testname(
-    campaign_filename: str, test_name: str, timeout: int, gnb_arguments=""
+    *, campaign_filename: str, test_name: str, timeout: int, gnb_arguments=""  # The "*" enforces keyword-only arguments
 ) -> _ViaviConfiguration:
     """
     Get Viavi configuration from dict

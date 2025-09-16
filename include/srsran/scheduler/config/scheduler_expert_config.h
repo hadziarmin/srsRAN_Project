@@ -29,6 +29,7 @@
 #include "srsran/ran/direct_current_offset.h"
 #include "srsran/ran/pdcch/aggregation_level.h"
 #include "srsran/ran/pdsch/pdsch_mcs.h"
+#include "srsran/ran/resource_allocation/vrb_to_prb.h"
 #include "srsran/ran/resource_block.h"
 #include "srsran/ran/sch/sch_mcs.h"
 #include "srsran/ran/sib/sib_configuration.h"
@@ -54,7 +55,7 @@ struct time_qos_scheduler_expert_config {
   weight_function qos_weight_func = weight_function::gbr_prioritized;
   /// Fairness Coefficient to use in Proportional Fair weight of the QoS-aware policy.
   double pf_fairness_coeff = 2.0;
-  /// Whether to take into account or ignore the QoS Flow priority in the QoS-aware scheduling.
+  /// Whether to take into account or ignore the QoS Flow priority and ARP priority in the QoS-aware scheduling.
   bool priority_enabled = true;
   /// Whether to take into account or ignore the QoS Flow Packet Delay Budget (PDB) in the QoS-aware scheduling.
   bool pdb_enabled = true;
@@ -66,7 +67,7 @@ struct time_qos_scheduler_expert_config {
 struct time_rr_scheduler_expert_config {};
 
 /// \brief Policy scheduler expert parameters.
-using policy_scheduler_expert_config = std::variant<time_rr_scheduler_expert_config, time_qos_scheduler_expert_config>;
+using policy_scheduler_expert_config = std::variant<time_qos_scheduler_expert_config, time_rr_scheduler_expert_config>;
 
 struct ul_power_control {
   /// Enable closed-loop PUSCH power control.
@@ -104,6 +105,10 @@ struct scheduler_ue_expert_config {
   unsigned max_nof_dl_harq_retxs = 4;
   /// Maximum number of UL HARQ retxs.
   unsigned max_nof_ul_harq_retxs = 4;
+  /// Timeout for DL HARQ with pending retransmission to be discarded.
+  std::chrono::milliseconds dl_harq_retx_timeout{100};
+  /// Timeout for UL HARQ with pending retransmission to be discarded.
+  std::chrono::milliseconds ul_harq_retx_timeout{100};
   /// Maximum MCS index that can be assigned when scheduling MSG4.
   sch_mcs_index max_msg4_mcs;
   /// Initial UL SINR value used for Dynamic UL MCS computation (in dB).
@@ -187,10 +192,14 @@ struct scheduler_ue_expert_config {
   bool auto_ack_harq{false};
   /// Boundaries in RB interval for resource allocation of UE PDSCHs.
   crb_interval pdsch_crb_limits{0, MAX_NOF_PRBS};
+  /// Bundle size used for interleaving. Possible values: {0, 2, 4}. When set to 0, interleaving is disabled.
+  vrb_to_prb::mapping_type pdsch_interleaving_bundle_size{vrb_to_prb::mapping_type::non_interleaved};
   /// Boundaries in RB interval for resource allocation of UE PUSCHs.
   crb_interval pusch_crb_limits{0, MAX_NOF_PRBS};
+  /// Minimum distance between PUCCH and PUSCH in number of PRBs.
+  unsigned min_pucch_pusch_prb_distance = 1;
   /// Expert parameters to be passed to the policy scheduler.
-  policy_scheduler_expert_config strategy_cfg = time_rr_scheduler_expert_config{};
+  policy_scheduler_expert_config strategy_cfg = time_qos_scheduler_expert_config{};
   /// \brief Size of the group of UEs that is considered for newTx DL allocation in a given slot. The groups of UEs
   /// will rotate in a round-robin fashion.
   /// To minimize computation load, a lower group size can be used. If the QoS scheduler policy is used, this will
@@ -226,6 +235,8 @@ struct scheduler_ra_expert_config {
   sch_mcs_index msg3_mcs_index = 0;
   /// Maximum number of Msg3 PUSCH retransmissions.
   unsigned max_nof_msg3_harq_retxs = 4;
+  /// Timeout for Msg3 HARQ with pending retransmission to be discarded.
+  std::chrono::milliseconds harq_retx_timeout{100};
 };
 
 /// \brief Paging scheduling statically configurable expert parameters.

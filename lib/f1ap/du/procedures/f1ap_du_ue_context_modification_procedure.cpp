@@ -129,6 +129,35 @@ void f1ap_du_ue_context_modification_procedure::create_du_request(const asn1::f1
     // >> Pass UE capabilities.
     du_request.ue_cap_rat_list = msg->cu_to_du_rrc_info.ue_cap_rat_container_list.copy();
   }
+
+  if (msg->rrc_recfg_complete_ind_present) {
+    // >>RRC Reconfiguration Complete Indicator IE.
+    // [TS 38.473, 9.3.1.30] This IE indicates the result of the reconfiguration performed towards the UE.
+    du_request.rrc_recfg_complete_ind =
+        msg->rrc_recfg_complete_ind == asn1::f1ap::rrc_recfg_complete_ind_opts::options::true_value;
+  } else {
+    du_request.rrc_recfg_complete_ind = false;
+  }
+
+  if (msg->serving_cell_mo_present) {
+    // >> servingCellMO IE.
+    // [TS 38.473, 8.3.4.2]  If the servingCellMO IE is included in the UE CONTEXT MODIFICATION REQUEST message, the
+    // gNB-DU shall configure servingCellMO for the indicated SpCell accordingly.
+    du_request.serving_cell_mo.emplace(msg->serving_cell_mo);
+  }
+
+  if (msg->serving_cell_mo_list_present) {
+    // > servingCellMO List IE.
+    // [TS 38.473, 8.3.4.2] If the servingCellMO List IE is included in the UE CONTEXT MODIFICATION REQUEST message,
+    // the gNB-DU shall, if supported, configure servingCellMO after determining the list of BWPs for the UE and
+    // include the list of servingCellMOs that have been encoded in CellGroupConfig IE as ServingCellMO-encoded-in-CGC
+    // List IE in the UE CONTEXT MODIFICATION RESPONSE message.
+    auto& list = du_request.serving_cell_mo_list.emplace(msg->serving_cell_mo_list.size());
+    for (const auto& item : msg->serving_cell_mo_list) {
+      list.emplace_back(f1ap_serving_cell_mo_list_item{item->serving_cell_mo_list_item().serving_cell_mo,
+                                                       item->serving_cell_mo_list_item().ssb_freq});
+    }
+  }
 }
 
 void f1ap_du_ue_context_modification_procedure::send_ue_context_modification_response()
@@ -185,6 +214,13 @@ void f1ap_du_ue_context_modification_procedure::send_ue_context_modification_res
   if (du_response.full_config_present) {
     resp->full_cfg_present = true;
     resp->full_cfg.value   = asn1::f1ap::full_cfg_opts::full;
+  }
+
+  if (req->serving_cell_mo_list_present) {
+    // > ServingCellMO-encoded-in-CGC List.
+    resp->serving_cell_mo_encoded_in_cgc_list_present = true;
+    resp->serving_cell_mo_encoded_in_cgc_list =
+        make_serving_cell_mo_encoded_in_cgc_list(du_response.serving_cell_mo_encoded_in_cgc_list);
   }
 
   ue.f1ap_msg_notifier.on_new_message(f1ap_msg);

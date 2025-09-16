@@ -21,6 +21,7 @@
  */
 
 #include "ofh_downlink_handler_impl.h"
+#include "../support/logger_utils.h"
 #include "helpers.h"
 #include "srsran/instrumentation/traces/ofh_traces.h"
 #include "srsran/ofh/ofh_error_notifier.h"
@@ -45,17 +46,44 @@ downlink_handler_impl::downlink_handler_impl(const downlink_handler_impl_config&
       get_nsymb_per_slot(config.cp)),
   data_flow_cplane(std::move(dependencies.data_flow_cplane)),
   data_flow_uplane(std::move(dependencies.data_flow_uplane)),
-  frame_pool(std::move(dependencies.frame_pool)),
+  frame_pool_dl_cp(std::move(dependencies.frame_pool_dl_cp)),
+  frame_pool_dl_up(std::move(dependencies.frame_pool_dl_up)),
   err_notifier(dependencies.err_notifier),
-  metrics_collector(*data_flow_cplane, *data_flow_uplane, window_checker)
+  metrics_collector(*data_flow_cplane, *data_flow_uplane, window_checker),
+  enable_log_warnings_for_lates(config.enable_log_warnings_for_lates)
 {
   srsran_assert(data_flow_cplane, "Invalid Control-Plane data flow");
   srsran_assert(data_flow_uplane, "Invalid User-Plane data flow");
-  srsran_assert(frame_pool, "Invalid frame pool");
+  srsran_assert(frame_pool_dl_cp, "Invalid downlink Control-Plane frame pool");
+  srsran_assert(frame_pool_dl_up, "Invalid downlink User-Plane frame pool");
+}
+
+void downlink_handler_impl::start()
+{
+  is_running.store(true, std::memory_order_relaxed);
+}
+
+void downlink_handler_impl::stop()
+{
+  if (!is_running.load(std::memory_order_relaxed)) {
+    return;
+  }
+
+  // Stop accepting grids.
+  is_running.store(false, std::memory_order_relaxed);
+
+  // Stop the data flows.
+  data_flow_cplane->get_operation_controller().stop();
+  data_flow_uplane->get_operation_controller().stop();
 }
 
 void downlink_handler_impl::handle_dl_data(const resource_grid_context& context, const shared_resource_grid& grid)
 {
+  // Do nothing if handler is not running.
+  if (!is_running.load(std::memory_order_relaxed)) {
+    return;
+  }
+
   const resource_grid_reader& reader = grid.get_reader();
   srsran_assert(reader.get_nof_ports() <= dl_eaxc.size(),
                 "Number of RU ports is '{}' and must be equal or greater than the number of cell ports which is '{}'",
@@ -65,16 +93,24 @@ void downlink_handler_impl::handle_dl_data(const resource_grid_context& context,
   trace_point tp = ofh_tracer.now();
 
   // Clear any stale buffers associated with the context slot.
-  frame_pool->clear_downlink_slot(context.slot, context.sector, logger);
+  metrics_collector.update_cp_dl_lates(frame_pool_dl_cp->clear_slot(context.slot, context.sector));
+  metrics_collector.update_up_dl_lates(frame_pool_dl_up->clear_slot(context.slot, context.sector));
+
+  // Nothing to do on empty resource grids.
+  if (grid.get_reader().is_empty()) {
+    return;
+  }
 
   if (window_checker.is_late(context.slot)) {
-    err_notifier.on_late_downlink_message({context.slot, sector_id});
-
-    logger.warning(
+    log_conditional_warning(
+        logger,
+        enable_log_warnings_for_lates,
         "Sector#{}: dropped late downlink resource grid in slot '{}'. No OFH data will be transmitted for this slot",
         sector_id,
         context.slot);
     ofh_tracer << trace_event("ofh_handle_dl_late", tp);
+
+    err_notifier.on_late_downlink_message({context.slot, sector_id});
     return;
   }
 
@@ -100,5 +136,6 @@ void downlink_handler_impl::handle_dl_data(const resource_grid_context& context,
     uplane_context.eaxc = dl_eaxc[cell_port_id];
     data_flow_uplane->enqueue_section_type_1_message(uplane_context, grid);
   }
+
   ofh_tracer << trace_event("ofh_handle_downlink", tp);
 }

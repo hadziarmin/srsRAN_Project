@@ -255,7 +255,7 @@ radio_session_uhd_impl::radio_session_uhd_impl(const radio_configuration::radio&
     return;
   }
 
-  if (!device.set_automatic_master_clock_rate(radio_config.sampling_rate_hz)) {
+  if (!device.set_automatic_master_clock_rate(radio_config.sampling_rate_Hz)) {
     fmt::print("Error setting master clock rate. {}\n", device.get_error_message());
     return;
   }
@@ -273,8 +273,6 @@ radio_session_uhd_impl::radio_session_uhd_impl(const radio_configuration::radio&
       fmt::print("Could not lock reference GPS time source.\n");
       return;
     }
-
-    set_time_to_gps_time();
   }
 
   // Wait until external reference / GPS is locked.
@@ -289,7 +287,7 @@ radio_session_uhd_impl::radio_session_uhd_impl(const radio_configuration::radio&
 
   // Set Tx rate.
   double actual_tx_rate_Hz = 0.0;
-  if (!device.set_tx_rate(actual_tx_rate_Hz, radio_config.sampling_rate_hz)) {
+  if (!device.set_tx_rate(actual_tx_rate_Hz, radio_config.sampling_rate_Hz)) {
     fmt::print("Error: setting Tx sampling rate. {}\n", device.get_error_message());
     return;
   }
@@ -297,7 +295,7 @@ radio_session_uhd_impl::radio_session_uhd_impl(const radio_configuration::radio&
 
   // Set Rx rate.
   double actual_rx_rate_Hz = 0.0;
-  if (!device.set_rx_rate(actual_rx_rate_Hz, radio_config.sampling_rate_hz)) {
+  if (!device.set_rx_rate(actual_rx_rate_Hz, radio_config.sampling_rate_Hz)) {
     fmt::print("Error: setting Rx sampling rate. {}\n", device.get_error_message());
     return;
   }
@@ -306,9 +304,13 @@ radio_session_uhd_impl::radio_session_uhd_impl(const radio_configuration::radio&
   // Overwrite actual.
   actual_sampling_rate_Hz = actual_rx_rate_Hz;
 
-  // Reset timestamps.
-  if ((total_rx_channel_count > 1 || total_tx_channel_count > 1) &&
-      radio_config.clock.sync != radio_configuration::clock_sources::source::GPSDO) {
+  // Setup time.
+  if (radio_config.clock.sync == radio_configuration::clock_sources::source::GPSDO) {
+    // Set GPS time if GPSDO is configured.
+    set_time_to_gps_time();
+  } else if ((total_rx_channel_count > 1) || (total_tx_channel_count > 1) ||
+             (radio_config.clock.sync == radio_configuration::clock_sources::source::EXTERNAL)) {
+    // Set time zero to the next pulse.
     device.set_time_unknown_pps(uhd::time_spec_t());
   }
 
@@ -515,6 +517,42 @@ baseband_gateway_timestamp radio_session_uhd_impl::read_current_time()
     fmt::print("Error retrieving time.\n");
   }
   return time.to_ticks(actual_sampling_rate_Hz);
+}
+
+bool radio_session_uhd_impl::set_tx_freq(unsigned stream_id, double center_freq_Hz)
+{
+  // Iterate all ports searching for the given stream.
+  for (unsigned i_port = 0, end = tx_port_map.size(); i_port != end; ++i_port) {
+    // Skip if the stream does not match the given stream.
+    if (tx_port_map[i_port].first != stream_id) {
+      continue;
+    }
+
+    // Set transmit frequency for the port.
+    if (!set_tx_freq(i_port, {.center_frequency_Hz = center_freq_Hz, .lo_frequency_Hz = 0.0})) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool radio_session_uhd_impl::set_rx_freq(unsigned stream_id, double center_freq_Hz)
+{
+  // Iterate all ports searching for the given stream.
+  for (unsigned i_port = 0, end = rx_port_map.size(); i_port != end; ++i_port) {
+    // Skip if the stream does not match the given stream.
+    if (rx_port_map[i_port].first != stream_id) {
+      continue;
+    }
+
+    // Set receive frequency for the port.
+    if (!set_rx_freq(i_port, {.center_frequency_Hz = center_freq_Hz, .lo_frequency_Hz = 0.0})) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 std::unique_ptr<radio_session> radio_factory_uhd_impl::create(const radio_configuration::radio& config,

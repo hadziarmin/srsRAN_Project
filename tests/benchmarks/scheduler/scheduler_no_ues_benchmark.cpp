@@ -55,7 +55,7 @@ static void parse_args(int argc, char** argv, bench_params& params)
       case 'h':
       default:
         usage(argv[0], params);
-        exit(0);
+        std::exit(0);
     }
   }
 }
@@ -137,7 +137,8 @@ void benchmark_rach_scheduling()
 
 int main(int argc, char** argv)
 {
-  srslog::fetch_basic_logger("MAC", true).set_level(srslog::basic_levels::error);
+  srslog::fetch_basic_logger("MAC", true).set_level(srslog::basic_levels::warning);
+  srslog::fetch_basic_logger("SCHED", true).set_level(srslog::basic_levels::warning);
 
   srslog::init();
 

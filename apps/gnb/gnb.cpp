@@ -28,7 +28,6 @@
 #include "apps/services/buffer_pool/buffer_pool_manager.h"
 #include "apps/services/cmdline/cmdline_command_dispatcher.h"
 #include "apps/services/cmdline/stdout_metrics_command.h"
-#include "apps/services/core_isolation_manager.h"
 #include "apps/services/metrics/metrics_manager.h"
 #include "apps/services/metrics/metrics_notifier_proxy.h"
 #include "apps/services/remote_control/remote_server.h"
@@ -48,7 +47,9 @@
 #include "gnb_appconfig_translators.h"
 #include "gnb_appconfig_validators.h"
 #include "gnb_appconfig_yaml_writer.h"
+#include "srsran/adt/scope_exit.h"
 #include "srsran/cu_cp/cu_cp_operation_controller.h"
+#include "srsran/du/du_high/du_high_clock_controller.h"
 #include "srsran/du/du_operation_controller.h"
 #include "srsran/e1ap/gateways/e1_local_connector_factory.h"
 #include "srsran/e2/e2ap_config_translators.h"
@@ -62,7 +63,7 @@
 #include "srsran/support/io/io_broker_factory.h"
 #include "srsran/support/signal_handling.h"
 #include "srsran/support/signal_observer.h"
-#include "srsran/support/tracing/event_tracing.h"
+#include "srsran/support/sysinfo.h"
 #include "srsran/support/versioning/build_info.h"
 #include "srsran/support/versioning/version.h"
 #include <atomic>
@@ -111,12 +112,14 @@ static signal_dispatcher cleanup_signal_dispatcher;
 static void cleanup_signal_handler(int signal)
 {
   cleanup_signal_dispatcher.notify_signal(signal);
+  srslog::fetch_basic_logger("APP").error("Emergency flush of the logger");
   srslog::flush();
 }
 
 /// Function to call when an error is reported by the application.
 static void app_error_report_handler()
 {
+  srslog::fetch_basic_logger("APP").error("Emergency flush of the logger");
   srslog::flush();
 }
 
@@ -166,6 +169,9 @@ static void register_app_logs(const gnb_appconfig&            gnb_cfg,
   // Metrics log channels.
   const app_helpers::metrics_config& metrics_cfg = gnb_cfg.metrics_cfg.rusage_config.metrics_consumers_cfg;
   app_helpers::initialize_metrics_log_channels(metrics_cfg, log_cfg.hex_max_size);
+  if (metrics_cfg.enable_json_metrics) {
+    app_services::initialize_json_channel();
+  }
 
   // Register units logs.
   cu_cp_app_unit.on_loggers_registration();
@@ -273,13 +279,15 @@ int main(int argc, char** argv)
     return 0;
   }
 
-  auto available_cpu_mask = (gnb_cfg.expert_execution_cfg.affinities.isolated_cpus)
-                                ? gnb_cfg.expert_execution_cfg.affinities.isolated_cpus.value()
-                                : os_sched_affinity_bitmask::available_cpus();
+  if (gnb_cfg.metrics_cfg.rusage_config.metrics_consumers_cfg.enable_json_metrics &&
+      !gnb_cfg.remote_control_config.enabled) {
+    fmt::println("NOTE: No JSON metrics will be generated as the remote server is disabled");
+  }
+
   // Check the modified configuration.
-  if (!validate_appconfig(gnb_cfg) || !o_cu_cp_app_unit->on_configuration_validation(available_cpu_mask) ||
-      !o_cu_up_app_unit->on_configuration_validation(available_cpu_mask) ||
-      !o_du_app_unit->on_configuration_validation(available_cpu_mask) ||
+  if (!validate_appconfig(gnb_cfg) || !o_cu_cp_app_unit->on_configuration_validation() ||
+      !o_cu_up_app_unit->on_configuration_validation(not gnb_cfg.log_cfg.tracing_filename.empty()) ||
+      !o_du_app_unit->on_configuration_validation() ||
       !validate_plmn_and_tacs(o_du_app_unit->get_o_du_high_unit_config().du_high_cfg.config,
                               o_cu_cp_app_unit->get_o_cu_cp_unit_config().cucp_cfg)) {
     report_error("Invalid configuration detected.\n");
@@ -287,6 +295,7 @@ int main(int argc, char** argv)
 
   // Set up logging.
   initialize_log(gnb_cfg.log_cfg.filename);
+  auto log_flusher = make_scope_exit([]() { srslog::flush(); });
   register_app_logs(gnb_cfg, *o_cu_cp_app_unit, *o_cu_up_app_unit, *o_du_app_unit);
 
   // Check the metrics and metrics consumers.
@@ -315,13 +324,6 @@ int main(int argc, char** argv)
   app_services::application_tracer app_tracer;
   if (not gnb_cfg.log_cfg.tracing_filename.empty()) {
     app_tracer.enable_tracer(gnb_cfg.log_cfg.tracing_filename, gnb_logger);
-  }
-
-  app_services::core_isolation_manager core_isolation_mngr;
-  if (gnb_cfg.expert_execution_cfg.affinities.isolated_cpus) {
-    if (!core_isolation_mngr.isolate_cores(*gnb_cfg.expert_execution_cfg.affinities.isolated_cpus)) {
-      report_error("Failed to isolate specified CPUs");
-    }
   }
 
 #ifdef DPDK_FOUND
@@ -364,27 +366,30 @@ int main(int argc, char** argv)
   o_du_app_unit->fill_worker_manager_config(worker_manager_cfg);
   fill_gnb_worker_manager_config(worker_manager_cfg, gnb_cfg);
   worker_manager_cfg.app_timers = &app_timers;
-
   worker_manager workers{worker_manager_cfg};
 
-  // Set layer-specific pcap options.
-  const auto& low_prio_cpu_mask = gnb_cfg.expert_execution_cfg.affinities.low_priority_cpu_cfg.mask;
-
   // Create IO broker.
-  io_broker_config           io_broker_cfg(low_prio_cpu_mask);
+  const auto&                main_pool_cpu_mask = gnb_cfg.expert_execution_cfg.affinities.main_pool_cpu_cfg.mask;
+  io_broker_config           io_broker_cfg(os_thread_realtime_priority::min() + 5, main_pool_cpu_mask);
   std::unique_ptr<io_broker> epoll_broker = create_io_broker(io_broker_type::epoll, io_broker_cfg);
+
+  // Create a DU-high timer source.
+  auto time_ctrl =
+      srs_du::create_du_high_clock_controller(app_timers, *epoll_broker, workers.get_timer_source_executor());
 
   // Create layer specific PCAPs.
   // In the gNB app, there is no point in instantiating two pcaps for each node of E1 and F1.
   // We disable one accordingly.
+  auto on_pcap_close = make_scope_exit([&gnb_logger]() { gnb_logger.info("PCAP files successfully closed."); });
   o_cu_up_app_unit->get_o_cu_up_unit_config().cu_up_cfg.pcap_cfg.disable_e1_pcaps();
   o_du_app_unit->get_o_du_high_unit_config().du_high_cfg.config.pcaps.disable_f1_pcaps();
   o_cu_cp_dlt_pcaps cu_cp_dlt_pcaps = create_o_cu_cp_dlt_pcap(
-      o_cu_cp_app_unit->get_o_cu_cp_unit_config(), *workers.get_executor_getter(), cleanup_signal_dispatcher);
+      o_cu_cp_app_unit->get_o_cu_cp_unit_config(), workers.get_cu_cp_pcap_executors(), cleanup_signal_dispatcher);
   o_cu_up_dlt_pcaps cu_up_dlt_pcaps = create_o_cu_up_dlt_pcaps(
-      o_cu_up_app_unit->get_o_cu_up_unit_config(), *workers.get_executor_getter(), cleanup_signal_dispatcher);
-  flexible_o_du_pcaps du_pcaps =
-      create_o_du_pcaps(o_du_app_unit->get_o_du_high_unit_config(), workers, cleanup_signal_dispatcher);
+      o_cu_up_app_unit->get_o_cu_up_unit_config(), workers.get_cu_up_pcap_executors(), cleanup_signal_dispatcher);
+  flexible_o_du_pcaps du_pcaps = create_o_du_pcaps(
+      o_du_app_unit->get_o_du_high_unit_config(), workers.get_du_pcap_executors(), cleanup_signal_dispatcher);
+  auto on_pcap_close_init = make_scope_exit([&gnb_logger]() { gnb_logger.info("Closing PCAP files..."); });
 
   std::unique_ptr<f1c_local_connector> f1c_gw =
       create_f1c_local_connector(f1c_local_connector_config{*cu_cp_dlt_pcaps.f1ap});
@@ -415,32 +420,30 @@ int main(int argc, char** argv)
   std::unique_ptr<e2_connection_client> e2_gw_du = create_e2_gateway_client(
       generate_e2_client_gateway_config(o_du_app_unit->get_o_du_high_unit_config().e2_cfg.base_cfg,
                                         *epoll_broker,
-                                        *workers.non_rt_hi_prio_exec,
+                                        workers.get_du_high_executor_mapper().e2_rx_executor(),
                                         *du_pcaps.e2ap,
                                         E2_DU_PPID));
   std::unique_ptr<e2_connection_client> e2_gw_cu_cp = create_e2_gateway_client(
       generate_e2_client_gateway_config(o_cu_cp_app_unit->get_o_cu_cp_unit_config().e2_cfg.base_config,
                                         *epoll_broker,
-                                        *workers.non_rt_hi_prio_exec,
+                                        workers.get_cu_cp_executor_mapper().e2_rx_executor(),
                                         *cu_cp_dlt_pcaps.e2ap,
                                         E2_CP_PPID));
   std::unique_ptr<e2_connection_client> e2_gw_cu_up = create_e2_gateway_client(
       generate_e2_client_gateway_config(o_cu_up_app_unit->get_o_cu_up_unit_config().e2_cfg.base_config,
                                         *epoll_broker,
-                                        *workers.non_rt_hi_prio_exec,
+                                        workers.get_cu_up_executor_mapper().e2_rx_executor(),
                                         *cu_up_dlt_pcaps.e2ap,
                                         E2_UP_PPID));
 
   // Create O-CU-CP dependencies.
   o_cu_cp_unit_dependencies o_cucp_deps;
-  o_cucp_deps.cu_cp_executor       = workers.cu_cp_exec;
-  o_cucp_deps.cu_cp_n2_rx_executor = workers.non_rt_hi_prio_exec;
-  o_cucp_deps.cu_cp_e2_exec        = workers.cu_e2_exec;
-  o_cucp_deps.timers               = cu_timers;
-  o_cucp_deps.ngap_pcap            = cu_cp_dlt_pcaps.ngap.get();
-  o_cucp_deps.broker               = epoll_broker.get();
-  o_cucp_deps.metrics_notifier     = &metrics_notifier_forwarder;
-  o_cucp_deps.e2_gw                = e2_gw_cu_cp.get();
+  o_cucp_deps.executor_mapper  = &workers.get_cu_cp_executor_mapper();
+  o_cucp_deps.timers           = cu_timers;
+  o_cucp_deps.ngap_pcap        = cu_cp_dlt_pcaps.ngap.get();
+  o_cucp_deps.broker           = epoll_broker.get();
+  o_cucp_deps.metrics_notifier = &metrics_notifier_forwarder;
+  o_cucp_deps.e2_gw            = e2_gw_cu_cp.get();
 
   // create O-CU-CP.
   auto                o_cucp_unit = o_cu_cp_app_unit->create_o_cu_cp(o_cucp_deps);
@@ -452,7 +455,6 @@ int main(int argc, char** argv)
   // Create CU-UP
   o_cu_up_unit_dependencies o_cuup_unit_deps;
   o_cuup_unit_deps.workers          = &workers;
-  o_cuup_unit_deps.cu_up_e2_exec    = workers.cu_e2_exec;
   o_cuup_unit_deps.e1ap_conn_client = e1_gw.get();
   o_cuup_unit_deps.f1u_gateway      = f1u_conn->get_f1u_cu_up_gateway();
   o_cuup_unit_deps.gtpu_pcap        = cu_up_dlt_pcaps.n3.get();
@@ -470,7 +472,7 @@ int main(int argc, char** argv)
   odu_dependencies.workers            = &workers;
   odu_dependencies.f1c_client_handler = f1c_gw.get();
   odu_dependencies.f1u_gw             = f1u_conn->get_f1u_du_gateway();
-  odu_dependencies.timer_mng          = &app_timers;
+  odu_dependencies.timer_ctrl         = time_ctrl.get();
   odu_dependencies.mac_p              = du_pcaps.mac.get();
   odu_dependencies.rlc_p              = du_pcaps.rlc.get();
   odu_dependencies.e2_client_handler  = e2_gw_du.get();
@@ -485,7 +487,7 @@ int main(int argc, char** argv)
 
   app_services::metrics_manager metrics_mngr(
       srslog::fetch_basic_logger("GNB"),
-      *workers.metrics_exec,
+      workers.get_metrics_executor(),
       metrics_configs,
       app_timers,
       std::chrono::milliseconds(gnb_cfg.metrics_cfg.metrics_service_cfg.app_usage_report_period));
@@ -508,7 +510,7 @@ int main(int argc, char** argv)
     commands.push_back(std::move(cmd));
   }
 
-  app_services::cmdline_command_dispatcher command_parser(*epoll_broker, *workers.non_rt_low_prio_exec, commands);
+  app_services::cmdline_command_dispatcher command_parser(*epoll_broker, workers.get_cmd_line_executor(), commands);
 
   // Connect E1AP to O-CU-CP.
   e1_gw->attach_cu_cp(o_cucp_obj.get_cu_cp().get_e1_handler());
@@ -542,7 +544,8 @@ int main(int argc, char** argv)
       app_services::create_remote_server(gnb_cfg.remote_control_config, du_inst_and_cmds.commands.remote);
 
   {
-    app_services::application_message_banners app_banner(app_name);
+    app_services::application_message_banners app_banner(
+        app_name, gnb_cfg.log_cfg.filename == "stdout" ? std::string_view() : gnb_cfg.log_cfg.filename);
 
     while (is_app_running) {
       std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -563,18 +566,6 @@ int main(int argc, char** argv)
 
   // Stop O-CU-CP activity.
   o_cucp_obj.get_operation_controller().stop();
-
-  gnb_logger.info("Closing PCAP files...");
-  cu_cp_dlt_pcaps.reset();
-  cu_up_dlt_pcaps.reset();
-  du_pcaps.reset();
-  gnb_logger.info("PCAP files successfully closed.");
-
-  gnb_logger.info("Stopping executors...");
-  workers.stop();
-  gnb_logger.info("Executors closed successfully.");
-
-  srslog::flush();
 
   return 0;
 }

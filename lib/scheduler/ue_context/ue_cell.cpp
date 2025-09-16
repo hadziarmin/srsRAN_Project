@@ -24,7 +24,6 @@
 #include "../support/dmrs_helpers.h"
 #include "../support/mcs_calculator.h"
 #include "../support/pdcch_aggregation_level_calculator.h"
-#include "../support/prbs_calculator.h"
 #include "../support/sch_pdu_builder.h"
 #include "ue_drx_controller.h"
 #include "srsran/ran/sch/tbs_calculator.h"
@@ -34,17 +33,18 @@
 using namespace srsran;
 
 /// Number of UL HARQs reserved per UE (Implementation-defined)
-constexpr unsigned NOF_UL_HARQS = 16;
+static constexpr unsigned NOF_UL_HARQS = 16;
 
 /// The default number of HARQ processes to be used on the PDSCH of a serving cell. See TS 38.331, \c
 /// nrofHARQ-ProcessesForPDSCH.
-constexpr unsigned DEFAULT_NOF_DL_HARQS = 8;
+static constexpr unsigned DEFAULT_NOF_DL_HARQS = 8;
 
 ue_cell::ue_cell(du_ue_index_t                ue_index_,
                  rnti_t                       crnti_val,
                  const ue_cell_configuration& ue_cell_cfg_,
                  cell_harq_manager&           cell_harq_pool,
-                 ue_drx_controller&           drx_ctrl_) :
+                 ue_drx_controller&           drx_ctrl_,
+                 std::optional<slot_point>    msg3_slot_rx) :
   ue_index(ue_index_),
   cell_index(ue_cell_cfg_.cell_cfg_common.cell_index),
   harqs(cell_harq_pool.add_ue(ue_index,
@@ -59,6 +59,8 @@ ue_cell::ue_cell(du_ue_index_t                ue_index_,
   expert_cfg(cell_cfg.expert_cfg.ue),
   drx_ctrl(drx_ctrl_),
   logger(srslog::fetch_basic_logger("SCHED")),
+  // Set ConRes procedure complete by default. Variable only needed for RACHs where MSG3 contains ConRes MAC-CE.
+  conres_procedure({.complete = true, .msg3_rx_slot = msg3_slot_rx}),
   channel_state(cell_cfg.expert_cfg.ue, ue_cfg->get_nof_dl_ports()),
   ue_mcs_calculator(ue_cell_cfg_.cell_cfg_common, channel_state),
   pusch_pwr_controller(ue_cell_cfg_, channel_state),
@@ -133,6 +135,10 @@ std::optional<ue_cell::dl_ack_info_result> ue_cell::handle_dl_ack_info(slot_poin
   }
 
   dl_harq_process_handle::status_update outcome = h_dl->dl_ack_info(ack_value, pucch_snr);
+
+  if (outcome == dl_harq_process_handle::status_update::nacked) {
+    drx_ctrl.on_dl_harq_nack(uci_slot);
+  }
 
   if (outcome == dl_harq_process_handle::status_update::acked or
       outcome == dl_harq_process_handle::status_update::nacked) {
@@ -487,4 +493,15 @@ double ue_cell::get_estimated_ul_rate(const pusch_config_params& pusch_cfg, sch_
 
   // Return the estimated throughput, considering that the number of bytes is for a slot.
   return tbs_bits / NOF_BITS_PER_BYTE;
+}
+
+void ue_cell::set_conres_state(bool state)
+{
+  conres_procedure.complete = state;
+  if (state) {
+    conres_procedure.msg3_rx_slot.reset();
+    logger.debug("ue={} rnti={}: ConRes procedure completed", fmt::underlying(ue_index), rnti());
+  } else {
+    logger.debug("ue={} rnti={}: ConRes procedure started", fmt::underlying(ue_index), rnti());
+  }
 }

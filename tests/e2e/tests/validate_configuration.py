@@ -51,6 +51,13 @@ N300_CONFIG_FILE: str = "configs/gnb_rf_n310_fdd_n3_20mhz.yml"
     ),
 )
 @mark.rf_b200
+@mark.flaky(
+    reruns=2,
+    only_rerun=[
+        "socket is already closed",
+        "failed to connect to all addresses",
+    ],
+)
 def test_rf_b200_config(
     retina_manager: RetinaTestManager,
     retina_data: RetinaTestData,
@@ -62,7 +69,15 @@ def test_rf_b200_config(
     """
     Run gnb with B200 example config and validate it doesn't crash.
     """
-    run_config(retina_manager, retina_data, fivegc, gnb, timeout, config_file, "")
+    run_config(
+        retina_manager=retina_manager,
+        retina_data=retina_data,
+        fivegc=fivegc,
+        gnb=gnb,
+        timeout=timeout,
+        config_file=config_file,
+        extra_config="",
+    )
 
 
 @mark.rf_n300
@@ -77,11 +92,20 @@ def test_rf_n300_config(
     Run gnb with N300 example config and validate it doesn't crash.
     """
     extra_config = "ru_sdr --clock external --sync external"
-    run_config(retina_manager, retina_data, fivegc, gnb, timeout, N300_CONFIG_FILE, extra_config)
+    run_config(
+        retina_manager=retina_manager,
+        retina_data=retina_data,
+        fivegc=fivegc,
+        gnb=gnb,
+        timeout=timeout,
+        config_file=N300_CONFIG_FILE,
+        extra_config=extra_config,
+    )
 
 
 # pylint: disable=too-many-arguments,too-many-positional-arguments
 def run_config(
+    *,  # This enforces keyword-only arguments
     retina_manager: RetinaTestManager,
     retina_data: RetinaTestData,
     fivegc: FiveGCStub,
@@ -149,4 +173,4 @@ def run_config(
     logging.info("Waiting 60s...")
     sleep(60)
 
-    stop(tuple(), gnb, fivegc, retina_data, log_search=False)
+    stop(ue_array=tuple(), gnb=gnb, fivegc=fivegc, retina_data=retina_data, log_search=False)

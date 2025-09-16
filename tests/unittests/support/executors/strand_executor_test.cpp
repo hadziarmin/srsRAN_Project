@@ -36,12 +36,18 @@
 
 using namespace srsran;
 
+static_assert(is_task_executor<priority_task_strand_executor<task_executor*>>::value, "is_task_executor failed");
+static_assert(is_task_executor_ptr<priority_task_strand_executor<task_executor*>*>::value,
+              "is_task_executor_ptr failed");
+static_assert(is_task_executor_ptr<priority_task_strand_executor<task_executor*>*&>::value,
+              "is_task_executor_ptr failed");
+
 // Test helper function that verifies that a given number of tasks are executed in order.
 template <typename WaitCondition>
-void run_count_test(task_executor&       strand,
-                    unsigned             total_increments,
-                    unsigned             nof_producers,
-                    const WaitCondition& wait_tasks_to_run)
+static void run_count_test(task_executor&       strand,
+                           unsigned             total_increments,
+                           unsigned             nof_producers,
+                           const WaitCondition& wait_tasks_to_run)
 {
   srslog::init();
 
@@ -131,29 +137,6 @@ TYPED_TEST(single_prio_strand_test, dispatch_to_worker_pool_causes_no_race_condi
   this->setup_strand(task_worker_pool_executor<concurrent_queue_policy::lockfree_mpmc>(pool), nof_increments);
 
   run_count_test(*this->strand_exec, nof_increments, nof_pushers, [&pool]() { pool.wait_pending_tasks(); });
-}
-
-TYPED_TEST(single_prio_strand_test, execute_inside_worker_runs_inline)
-{
-  static const unsigned nof_increments = 4096;
-
-  task_worker w{"WORKER", 256};
-  auto        worker_exec = make_task_executor(w);
-  this->setup_strand(make_task_executor(w), 4);
-
-  unsigned count = 0;
-  w.push_task_blocking([this, &count]() {
-    // Running from inside the task_worker. Execute calls should be run inline.
-    for (unsigned i = 0; i != nof_increments; ++i) {
-      ASSERT_TRUE(this->strand_exec->execute([&count]() { count++; }));
-    }
-  });
-
-  w.wait_pending_tasks();
-
-  // Even though the worker queue size is smaller than the number of tasks, the fact that we run the task inline
-  // should ensure no task is dropped.
-  ASSERT_EQ(count, nof_increments);
 }
 
 template <typename StrandType>

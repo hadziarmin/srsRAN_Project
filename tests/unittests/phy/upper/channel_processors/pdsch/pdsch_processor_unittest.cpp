@@ -184,8 +184,8 @@ TEST_P(PdschProcessorFixture, UnitTest)
   re_pattern_list reserved = pdu.reserved;
   reserved.merge(dmrs_reserved_pattern);
 
-  // Get physical RB allocation mask.
-  prb_bitmap rb_mask = pdu.freq_alloc.get_crb_mask(pdu.bwp_start_rb, pdu.bwp_size_rb).convert_to<prb_bitmap>();
+  // Get RB allocation mask.
+  crb_bitmap rb_mask = pdu.freq_alloc.get_crb_mask(pdu.bwp_start_rb, pdu.bwp_size_rb);
 
   // Count number of resource elements.
   unsigned Nre = pdu.freq_alloc.get_nof_rb() * NRE * pdu.nof_symbols -
@@ -253,15 +253,15 @@ TEST_P(PdschProcessorFixture, UnitTest)
     const auto& entries = modulator_spy->get_entries();
     const auto& entry   = entries.front();
     ASSERT_EQ(entry.config.rnti, pdu.rnti);
-    ASSERT_EQ(entry.config.bwp_size_rb, pdu.bwp_size_rb);
-    ASSERT_EQ(entry.config.bwp_start_rb, pdu.bwp_start_rb);
+    ASSERT_EQ(entry.config.bwp.length(), pdu.bwp_size_rb);
+    ASSERT_EQ(entry.config.bwp.start(), pdu.bwp_start_rb);
     ASSERT_EQ(entry.config.modulation1, pdu.codewords[0].modulation);
     if (nof_codewords > 1) {
       ASSERT_EQ(entry.config.modulation2, pdu.codewords[1].modulation);
     }
     ASSERT_EQ(entry.config.freq_allocation, pdu.freq_alloc);
-    ASSERT_EQ(entry.config.start_symbol_index, pdu.start_symbol_index);
-    ASSERT_EQ(entry.config.nof_symbols, pdu.nof_symbols);
+    ASSERT_EQ(entry.config.time_alloc.start(), pdu.start_symbol_index);
+    ASSERT_EQ(entry.config.time_alloc.length(), pdu.nof_symbols);
     ASSERT_EQ(entry.config.n_id, pdu.n_id);
     ASSERT_NEAR(entry.config.scaling, convert_dB_to_amplitude(-pdu.ratio_pdsch_data_to_sss_dB), amplitude_max_error);
     ASSERT_EQ(entry.config.reserved, pdu.reserved);

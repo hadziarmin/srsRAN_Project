@@ -22,6 +22,7 @@
 
 #include "srsran/du/du_high/o_du_high_factory.h"
 #include "o_du_high_impl.h"
+#include "srsran/du/du_high/du_high_clock_controller.h"
 #include "srsran/du/du_high/du_high_factory.h"
 #include "srsran/du/du_high/o_du_high_config.h"
 #include "srsran/e2/e2_du_factory.h"
@@ -29,6 +30,7 @@
 #include "srsran/fapi_adaptor/mac/mac_fapi_adaptor_factory.h"
 #include "srsran/fapi_adaptor/precoding_matrix_table_generator.h"
 #include "srsran/fapi_adaptor/uci_part2_correspondence_generator.h"
+#include "srsran/ran/band_helper.h"
 
 using namespace srsran;
 using namespace srs_du;
@@ -39,7 +41,8 @@ static fapi_adaptor::mac_fapi_adaptor_config generate_fapi_adaptor_config(const 
 
   for (unsigned i = 0, e = config.du_hi.ran.cells.size(); i != e; ++i) {
     const auto& du_cell = config.du_hi.ran.cells[i];
-    unsigned    nof_prb = get_max_Nprb(du_cell.dl_carrier.carrier_bw_mhz, du_cell.scs_common, frequency_range::FR1);
+    unsigned    nof_prb = get_max_Nprb(
+        du_cell.dl_carrier.carrier_bw_mhz, du_cell.scs_common, band_helper::get_freq_range(du_cell.dl_carrier.band));
     out_config.sectors.push_back(
         {i, nof_prb, du_cell.scs_common, config.fapi.log_level, config.fapi.l2_nof_slots_ahead});
   }
@@ -71,42 +74,43 @@ std::unique_ptr<o_du_high> srsran::srs_du::make_o_du_high(const o_du_high_config
                                                           o_du_high_dependencies&& odu_dependencies)
 {
   o_du_high_impl_dependencies dependencies;
-  dependencies.logger          = &srslog::fetch_basic_logger("DU");
-  dependencies.du_high_adaptor = fapi_adaptor::create_mac_fapi_adaptor_factory()->create(
+  srslog::basic_logger*       logger = &srslog::fetch_basic_logger("DU");
+  dependencies.logger                = logger;
+  dependencies.du_high_adaptor       = fapi_adaptor::create_mac_fapi_adaptor_factory()->create(
       generate_fapi_adaptor_config(config), generate_fapi_adaptor_dependencies(config, odu_dependencies));
-  dependencies.metrics_notifier = odu_dependencies.du_hi.mac_metrics_notif;
+  dependencies.metrics_notifier = odu_dependencies.du_hi.du_notifier;
 
-  dependencies.logger->debug("FAPI adaptors created successfully");
+  logger->debug("FAPI adaptors created successfully");
 
   srs_du::du_high_configuration du_hi_cfg = config.du_hi;
 
   auto odu = std::make_unique<o_du_high_impl>(config.du_hi.ran.cells.size(), std::move(dependencies));
 
   // Resolve dependencies for DU-high.
-  odu_dependencies.du_hi.phy_adapter       = &odu->get_mac_result_notifier();
-  odu_dependencies.du_hi.mac_metrics_notif = &odu->get_mac_metrics_notifier();
+  odu_dependencies.du_hi.phy_adapter = &odu->get_mac_result_notifier();
+  odu_dependencies.du_hi.du_notifier = &odu->get_du_metrics_notifier();
 
   if (!odu_dependencies.e2_client) {
     odu->set_du_high(make_du_high(du_hi_cfg, odu_dependencies.du_hi));
-    dependencies.logger->info("DU created successfully");
+    logger->info("DU created successfully");
 
     return odu;
   }
 
   auto du_hi = make_du_high(du_hi_cfg, odu_dependencies.du_hi);
 
-  auto e2agent = create_e2_du_agent(
-      config.e2ap_config,
-      *odu_dependencies.e2_client,
-      odu_dependencies.e2_du_metric_iface,
-      &du_hi->get_f1ap_du(),
-      &du_hi->get_du_configurator(),
-      timer_factory{*odu_dependencies.du_hi.timers, odu_dependencies.du_hi.exec_mapper->du_e2_executor()},
-      odu_dependencies.du_hi.exec_mapper->du_e2_executor());
+  auto e2agent = create_e2_du_agent(config.e2ap_config,
+                                    *odu_dependencies.e2_client,
+                                    odu_dependencies.e2_du_metric_iface,
+                                    &du_hi->get_f1ap_du(),
+                                    &du_hi->get_du_configurator(),
+                                    timer_factory{odu_dependencies.du_hi.timer_ctrl->get_timer_manager(),
+                                                  odu_dependencies.du_hi.exec_mapper->du_e2_executor()},
+                                    odu_dependencies.du_hi.exec_mapper->du_e2_executor());
 
   odu->set_e2_agent(std::move(e2agent));
   odu->set_du_high(std::move(du_hi));
-  dependencies.logger->info("DU created successfully");
+  logger->info("DU created successfully");
 
   return odu;
 }

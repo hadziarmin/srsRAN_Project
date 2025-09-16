@@ -78,7 +78,7 @@ static YAML::Node build_cu_cp_extra_amfs_item_section(const cu_cp_unit_amf_confi
   node["sctp_rto_max"]           = config.sctp_rto_max_ms;
   node["sctp_init_max_attempts"] = config.sctp_init_max_attempts;
   node["sctp_max_init_timeo"]    = config.sctp_max_init_timeo_ms;
-  node["sctp_hb_interval"]       = config.sctp_hb_interval_s;
+  node["sctp_hb_interval"]       = config.sctp_hb_interval_ms;
   node["sctp_assoc_max_retx"]    = config.sctp_assoc_max_retx;
   node["sctp_nodelay"]           = config.sctp_nodelay;
 
@@ -217,7 +217,7 @@ static YAML::Node build_cu_cp_rrc_section(const cu_cp_unit_rrc_config& config)
   YAML::Node node;
 
   node["force_reestablishment_fallback"] = config.force_reestablishment_fallback;
-  node["rrc_procedure_timeout_ms"]       = config.rrc_procedure_timeout_ms;
+  node["rrc_procedure_guard_time_ms"]    = config.rrc_procedure_guard_time_ms;
 
   return node;
 }
@@ -303,7 +303,9 @@ static void fill_cu_cp_pcap_section(YAML::Node node, const cu_cp_unit_pcap_confi
 
 static void fill_cu_cp_metrics_layers_section(YAML::Node node, const cu_cp_unit_metrics_layer_config& config)
 {
+  node["enable_ngap"] = config.enable_ngap;
   node["enable_pdcp"] = config.enable_pdcp;
+  node["enable_rrc"]  = config.enable_rrc;
 }
 
 static void fill_cu_cp_metrics_section(YAML::Node node, const cu_cp_unit_metrics_config& config)

@@ -117,7 +117,8 @@ public:
     });
   }
 
-  rrc_ue_release_context get_rrc_ue_release_context(bool requires_rrc_msg) override
+  rrc_ue_release_context get_rrc_ue_release_context(bool                                requires_rrc_msg,
+                                                    std::optional<std::chrono::seconds> release_wait_time) override
   {
     logger.info("Received a new request to get RRC UE release context");
     rrc_ue_release_context release_context;
@@ -132,7 +133,7 @@ public:
   }
 
   std::optional<rrc_meas_cfg>
-  generate_meas_config(std::optional<rrc_meas_cfg> current_meas_config = std::nullopt) override
+  generate_meas_config(const std::optional<rrc_meas_cfg>& current_meas_config = std::nullopt) override
   {
     logger.info("Received a new request to generate RRC UE meas config");
     std::optional<rrc_meas_cfg> meas_config;
@@ -280,8 +281,15 @@ protected:
             .value();
     request.non_crit_ext = recfg_v1530_ies;
 
-    t = launch_async<handover_reconfiguration_routine>(
-        request, target_ue->get_ue_index(), *source_ue, source_f1ap_ue_ctxt_mng, cu_cp_handler, test_logger);
+    e1ap_bearer_context_modification_request target_bearer_context_modification_request;
+
+    t = launch_async<handover_reconfiguration_routine>(request,
+                                                       target_bearer_context_modification_request,
+                                                       target_ue->get_ue_index(),
+                                                       *source_ue,
+                                                       source_f1ap_ue_ctxt_mng,
+                                                       cu_cp_handler,
+                                                       test_logger);
     t_launcher.emplace(t);
   }
 

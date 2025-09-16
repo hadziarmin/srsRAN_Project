@@ -30,6 +30,7 @@
 #include "srsran/rrc/rrc_ue.h"
 #include "srsran/support/async/async_task.h"
 #include "srsran/support/async/eager_async_task.h"
+#include <chrono>
 
 namespace srsran {
 namespace srs_cu_cp {
@@ -76,7 +77,8 @@ public:
                       rrc_ue_event_notifier&          metrics_notifier_,
                       rrc_ue_ngap_notifier&           ngap_notifier_,
                       rrc_ue_event_manager&           event_mng_,
-                      rrc_ue_logger&                  logger_);
+                      rrc_ue_logger&                  logger_,
+                      bool                            is_reestablishment_fallback_ = false);
 
   void operator()(coro_context<async_task<void>>& ctx);
 
@@ -100,8 +102,10 @@ private:
   rrc_ue_event_notifier&          metrics_notifier; // notifier to the metrics
   rrc_ue_ngap_notifier&           ngap_notifier;    // notifier to the NGAP
   rrc_ue_event_manager&           event_mng;        // event manager for the RRC UE entity
+  bool                            is_reestablishment_fallback = false;
   rrc_ue_logger&                  logger;
 
+  std::chrono::milliseconds     procedure_timeout{0};
   rrc_transaction               transaction;
   eager_async_task<rrc_outcome> task;
 };

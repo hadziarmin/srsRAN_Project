@@ -16,7 +16,7 @@ RUN TZ=Europe/Madrid && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
     git git-lfs \
-    clang llvm \
+    clang llvm lld \
     ccache gcovr valgrind \
     python3-dev python3-venv && \
     (apt-get install -y --no-install-recommends libclang-rt-dev || true) && \
@@ -30,6 +30,7 @@ RUN chmod +x /usr/local/bin/install_dependencies.sh /usr/local/bin/builder.sh /u
     python3 -m venv /usr/local/builder_tools && \
     /usr/local/builder_tools/bin/pip install "pandas<3" "psutil"
 
+ADD lib /opt/lib
 ADD uhd /opt/uhd
 ADD dpdk /opt/dpdk
 

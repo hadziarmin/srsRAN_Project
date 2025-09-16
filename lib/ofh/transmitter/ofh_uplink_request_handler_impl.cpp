@@ -21,6 +21,7 @@
  */
 
 #include "ofh_uplink_request_handler_impl.h"
+#include "../support/logger_utils.h"
 #include "helpers.h"
 #include "srsran/ofh/ofh_error_notifier.h"
 #include "srsran/phy/support/shared_resource_grid.h"
@@ -31,20 +32,6 @@
 
 using namespace srsran;
 using namespace ofh;
-
-namespace {
-/// Open Fronthaul error notifier dummy implementation.
-class error_notifier_dummy : public error_notifier
-{
-public:
-  void on_late_downlink_message(const error_context& context) override {}
-  void on_late_uplink_message(const error_context& context) override {}
-};
-
-} // namespace
-
-/// Dummy error notifier for the uplink request handler construction.
-static error_notifier_dummy dummy_err_notifier;
 
 /// Determines and returns Open Fronthaul filter index type given the PRACH preamble info and associated context.
 static filter_index_type get_prach_cplane_filter_index(const prach_buffer_context&       context,
@@ -97,36 +84,14 @@ uplink_request_handler_impl::uplink_request_handler_impl(const uplink_request_ha
   data_flow(std::move(dependencies.data_flow)),
   frame_pool(std::move(dependencies.frame_pool)),
   err_notifier(dependencies.err_notifier),
-  metrics_collector(data_flow->get_metrics_collector(), window_checker)
+  metrics_collector(data_flow->get_metrics_collector(), window_checker),
+  enable_log_warnings_for_lates(config.enable_log_warnings_for_lates)
 {
   srsran_assert(ul_slot_repo, "Invalid uplink repository");
   srsran_assert(ul_prach_repo, "Invalid PRACH repository");
   srsran_assert(notifier_symbol_repo, "Invalid notified uplink grid symbol repository");
   srsran_assert(data_flow, "Invalid data flow");
   srsran_assert(frame_pool, "Invalid frame pool");
-}
-
-/// Determines slot index where U-Plane packet is expected for long format PRACH.
-static slot_point get_long_prach_expected_slot(const prach_buffer_context& context)
-{
-  static constexpr unsigned nof_symbols_per_slot = get_nsymb_per_slot(cyclic_prefix::NORMAL);
-  srsran_assert(is_long_preamble(context.format), "Long PRACH format expected");
-
-  // Get preamble information.
-  prach_preamble_information preamble_info = get_prach_preamble_long_info(context.format);
-
-  double pusch_symbol_duration_msec =
-      static_cast<double>(SUBFRAME_DURATION_MSEC) /
-      static_cast<double>(get_nof_slots_per_subframe(context.pusch_scs) * nof_symbols_per_slot);
-
-  double   len_msecs   = (preamble_info.cp_length.to_seconds() + preamble_info.symbol_length().to_seconds()) * 1000;
-  unsigned nof_symbols = std::ceil(len_msecs / pusch_symbol_duration_msec);
-
-  unsigned prach_length_slots =
-      std::ceil(static_cast<double>(context.start_symbol + nof_symbols) / static_cast<double>(nof_symbols_per_slot));
-
-  // Subtract one to account for the current slot.
-  return (context.slot + (prach_length_slots - 1));
 }
 
 /// \brief Determine PRACH start symbol index.
@@ -162,15 +127,17 @@ void uplink_request_handler_impl::handle_prach_occasion(const prach_buffer_conte
     logger.debug("Registering PRACH context entry for slot '{}' and sector#{}", context.slot, context.sector);
   }
 
-  frame_pool->clear_uplink_slot(context.slot, context.sector, logger);
+  metrics_collector.update_cp_ul_lates(frame_pool->clear_slot(context.slot, context.sector));
 
   if (SRSRAN_UNLIKELY(window_checker.is_late(context.slot))) {
-    err_notifier.on_late_uplink_message({context.slot, context.sector});
-
-    logger.warning(
+    log_conditional_warning(
+        logger,
+        enable_log_warnings_for_lates,
         "Sector#{}: dropped late PRACH request in slot '{}'. No OFH data will be requested from an RU for this slot",
         context.sector,
         context.slot);
+
+    err_notifier.on_late_prach_message({context.slot, context.sector});
     return;
   }
 
@@ -179,17 +146,20 @@ void uplink_request_handler_impl::handle_prach_occasion(const prach_buffer_conte
   // Open Fronthaul parameters timeOffset and cpLength are expressed in multiple of \f$T_s\f$ units.
   static constexpr double ref_srate_Hz = 30.72e6;
 
-  // Store the context in the repository, use correct slot index for long format accounting for PRACH duration.
-  auto slot_idx = context.slot;
+  // Store the context in the repository.
   if (is_short_preamble(context.format)) {
-    ul_prach_repo->add(context, buffer, std::nullopt, std::nullopt);
+    ul_prach_repo->add(context, buffer, logger, std::nullopt);
+    if (SRSRAN_UNLIKELY(context.nof_td_occasions > 1)) {
+      logger.info("Sector#{}: PRACH with multiple time-domain occasions is configured, however only the first occasion "
+                  "will be used in slot '{}'",
+                  context.sector,
+                  context.slot);
+    }
   } else {
-    // Determine slot index where the PRACH U-Plane is expected.
-    slot_idx = get_long_prach_expected_slot(context);
     // Determine PRACH start symbol.
     unsigned start_symbol = get_prach_start_symbol(context);
 
-    ul_prach_repo->add(context, buffer, start_symbol, slot_idx);
+    ul_prach_repo->add(context, buffer, logger, start_symbol);
   }
 
   if (!is_prach_cp_enabled) {
@@ -213,7 +183,7 @@ void uplink_request_handler_impl::handle_prach_occasion(const prach_buffer_conte
   unsigned K         = (1000 * scs_to_khz(context.pusch_scs)) / ra_scs_to_Hz(preamble_info.scs);
 
   data_flow_cplane_scheduling_prach_context cp_prach_context;
-  cp_prach_context.slot            = slot_idx;
+  cp_prach_context.slot            = context.slot;
   cp_prach_context.nof_repetitions = preamble_info.nof_symbols;
   cp_prach_context.start_symbol    = get_prach_start_symbol(context);
   cp_prach_context.prach_scs       = preamble_info.scs;
@@ -238,15 +208,17 @@ void uplink_request_handler_impl::handle_new_uplink_slot(const resource_grid_con
     logger.debug("Registering UL context entry for slot '{}' and sector#{}", context.slot, context.sector);
   }
 
-  frame_pool->clear_uplink_slot(context.slot, context.sector, logger);
+  metrics_collector.update_cp_ul_lates(frame_pool->clear_slot(context.slot, context.sector));
 
   if (SRSRAN_UNLIKELY(window_checker.is_late(context.slot))) {
-    err_notifier.on_late_uplink_message({context.slot, context.sector});
-
-    logger.warning(
+    log_conditional_warning(
+        logger,
+        enable_log_warnings_for_lates,
         "Sector#{}: dropped late uplink request in slot '{}'. No OFH data will be requested from an RU for this slot",
         context.sector,
         context.slot);
+
+    err_notifier.on_late_uplink_message({context.slot, context.sector});
     return;
   }
 
@@ -258,7 +230,7 @@ void uplink_request_handler_impl::handle_new_uplink_slot(const resource_grid_con
                                        : ofdm_symbol_range(0, get_nsymb_per_slot(cp));
 
   // Store the context in the repository.
-  ul_slot_repo->add(context, grid, df_context.symbol_range);
+  ul_slot_repo->add(context, grid, df_context.symbol_range, logger);
 
   // Add entry to the notified symbol repository.
   notifier_symbol_repo->add(context.slot, df_context.symbol_range.start(), cp);

@@ -23,7 +23,6 @@
 #pragma once
 
 #include "srsran/ran/pci.h"
-#include "srsran/ran/slot_point.h"
 #include "srsran/scheduler/scheduler_metrics.h"
 #include <chrono>
 #include <vector>
@@ -41,7 +40,7 @@ struct mac_dl_cell_metric_report {
 
   /// Physical cell id.
   pci_t pci;
-  /// First slot of the report.
+  /// First SFN and SLOT of the report.
   slot_point start_slot;
   /// Number of slots considered in this report.
   unsigned nof_slots;
@@ -61,6 +60,10 @@ struct mac_dl_cell_metric_report {
   latency_report dl_tti_req_latency;
   /// \brief Description of the delays between the MAC completing a DL TTI request and completing a TX Data request.
   latency_report tx_data_req_latency;
+  /// \brief Description of the delays of the MAC at completing a UL TTI request.
+  latency_report ul_tti_req_latency;
+  /// \brief Description of the time difference between two consecutive FAPI slot indication messages.
+  latency_report slot_ind_msg_time_diff;
   /// Number of voluntary context switches.
   unsigned count_voluntary_context_switches;
   /// Number of involuntary context switches.

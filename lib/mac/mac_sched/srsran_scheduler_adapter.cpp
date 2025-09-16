@@ -44,13 +44,14 @@ static sched_ue_reconfiguration_message
 make_scheduler_ue_reconfiguration_request(const mac_ue_reconfiguration_request& request)
 {
   sched_ue_reconfiguration_message ret{};
-  ret.ue_index = request.ue_index;
-  ret.crnti    = request.crnti;
-  ret.cfg      = request.sched_cfg;
+  ret.ue_index      = request.ue_index;
+  ret.crnti         = request.crnti;
+  ret.cfg           = request.sched_cfg;
+  ret.reestablished = request.reestablished;
   return ret;
 }
 
-srsran_scheduler_adapter::srsran_scheduler_adapter(const mac_config& params, rnti_manager& rnti_mng_) :
+srsran_scheduler_adapter::srsran_scheduler_adapter(const srsran_mac_sched_config& params, rnti_manager& rnti_mng_) :
   rnti_mng(rnti_mng_),
   rlf_handler(params.mac_cfg),
   ctrl_exec(params.ctrl_exec),
@@ -130,9 +131,9 @@ async_task<bool> srsran_scheduler_adapter::handle_ue_reconfiguration_request(con
   });
 }
 
-async_task<bool> srsran_scheduler_adapter::handle_ue_removal_request(const mac_ue_delete_request& msg)
+async_task<void> srsran_scheduler_adapter::handle_ue_removal_request(const mac_ue_delete_request& msg)
 {
-  return launch_async([this, msg](coro_context<async_task<bool>>& ctx) {
+  return launch_async([this, msg](coro_context<async_task<void>>& ctx) {
     CORO_BEGIN(ctx);
 
     // Remove UE from the scheduler.
@@ -148,7 +149,7 @@ async_task<bool> srsran_scheduler_adapter::handle_ue_removal_request(const mac_u
     // Remove UE from RLF handler.
     rlf_handler.rem_ue(msg.ue_index, msg.cell_index);
 
-    CORO_RETURN(true);
+    CORO_RETURN();
   });
 }
 

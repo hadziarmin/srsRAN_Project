@@ -25,6 +25,7 @@
 #include "../../phy/support/resource_grid_test_doubles.h"
 #include "../../phy/upper/downlink_processor_test_doubles.h"
 #include "../../phy/upper/uplink_request_processor_test_doubles.h"
+#include "srsran/fapi/message_builders.h"
 #include "srsran/fapi_adaptor/precoding_matrix_table_generator.h"
 #include "srsran/fapi_adaptor/uci_part2_correspondence_generator.h"
 #include "srsran/phy/support/resource_grid_pool.h"
@@ -40,8 +41,8 @@ using namespace unittest;
 
 namespace {
 
-/// Slot error message notifier spy implementation.
-class slot_error_message_notifier_spy : public fapi::slot_error_message_notifier
+/// Error message notifier spy implementation.
+class error_message_notifier_spy : public fapi::error_message_notifier
 {
   fapi::error_indication_message message;
   bool                           error_indication_detected = false;
@@ -118,7 +119,7 @@ public:
     unsigned expected_available_ref_count = 0;
     bool     available                    = ref_count.compare_exchange_strong(expected_available_ref_count, 1);
     srsran_assert(available, "The grid must NOT be reserved.");
-    return {*this, ref_count, 0};
+    return {*this, ref_count};
   }
 
   unsigned get_getter_count() const { return getter_count; }
@@ -126,23 +127,17 @@ public:
   bool is_available() const { return ref_count == 0; }
 
 private:
-  resource_grid& get(unsigned identifier_) override
+  resource_grid& get() override
   {
-    srsran_assert(identifier == identifier_, "Identifier unmatched.");
     srsran_assert(ref_count != 0, "Reference counter must NOT be zero.");
     ++getter_count;
     return grid;
   }
 
-  void notify_release_scope(unsigned identifier_) override
-  {
-    srsran_assert(identifier == identifier_, "Identifier unmatched.");
-    srsran_assert(ref_count == 0, "Reference counter must be zero.");
-  }
+  void notify_release_scope() override { srsran_assert(ref_count == 0, "Reference counter must be zero."); }
 
-  static constexpr unsigned identifier   = 0;
-  std::atomic<unsigned>     ref_count    = {};
-  unsigned                  getter_count = 0;
+  std::atomic<unsigned> ref_count    = {};
+  unsigned              getter_count = 0;
 
   resource_grid_dummy grid;
 };
@@ -189,9 +184,12 @@ public:
 };
 
 class uplink_pdu_slot_repository_spy : public uplink_pdu_slot_repository_pool,
-                                       private unique_uplink_pdu_slot_repository::uplink_pdu_slot_repository_callback
+                                       private unique_uplink_pdu_slot_repository::uplink_pdu_slot_repository_callback,
+                                       private shared_resource_grid::pool_interface
 {
 public:
+  uplink_pdu_slot_repository_spy() : grid_spy(rg_reader, rg_writer) {}
+
   unique_uplink_pdu_slot_repository get_pdu_slot_repository(slot_point slot) override
   {
     srsran_assert(pusch_pdus.empty(), "PUSCH PDU list is not empty.");
@@ -202,7 +200,7 @@ public:
   }
 
 private:
-  void finish_adding_pdus() override {}
+  shared_resource_grid finish_adding_pdus() override { return {*this, grid_ref_count}; }
 
   void add_pusch_pdu(const pusch_pdu& pdu) override { pusch_pdus.emplace_back(pdu); }
 
@@ -210,10 +208,18 @@ private:
 
   void add_srs_pdu(const srs_pdu& pdu) override { srs_pdus.emplace_back(pdu); }
 
-  slot_point             current_slot;
-  std::vector<pusch_pdu> pusch_pdus;
-  std::vector<pucch_pdu> pucch_pdus;
-  std::vector<srs_pdu>   srs_pdus;
+  resource_grid& get() override { return grid_spy; }
+
+  void notify_release_scope() override {}
+
+  slot_point               current_slot;
+  std::vector<pusch_pdu>   pusch_pdus;
+  std::vector<pucch_pdu>   pucch_pdus;
+  std::vector<srs_pdu>     srs_pdus;
+  resource_grid_reader_spy rg_reader;
+  resource_grid_writer_spy rg_writer;
+  resource_grid_spy        grid_spy;
+  std::atomic<unsigned>    grid_ref_count = 0;
 };
 
 } // namespace
@@ -221,28 +227,27 @@ private:
 class fapi_to_phy_translator_fixture : public ::testing::Test
 {
 protected:
-  downlink_processor_pool_dummy   dl_processor_pool;
-  resource_grid_pool_dummy        rg_pool;
-  uplink_request_processor_spy    ul_request_processor;
-  uplink_pdu_slot_repository_spy  pdu_repo;
-  const unsigned                  sector_id         = 0;
-  const unsigned                  headroom_in_slots = 2;
-  const subcarrier_spacing        scs               = subcarrier_spacing::kHz15;
-  const slot_point                slot              = {scs, 1, 0};
-  fapi::prach_config              prach_cfg;
-  fapi::carrier_config            carrier_cfg = {0, 0, {}, {11, 51, 106, 0, 0}, 0, 0, 0, {}, {}, 0, 0, 0, 0};
-  downlink_pdu_validator_dummy    dl_pdu_validator;
-  uplink_pdu_validator_dummy      ul_pdu_validator;
-  slot_error_message_notifier_spy error_notifier_spy;
-  manual_task_worker              worker;
-  fapi_to_phy_translator_config   config = {sector_id, headroom_in_slots, false, scs, scs, prach_cfg, carrier_cfg, {0}};
+  downlink_processor_pool_dummy  dl_processor_pool;
+  resource_grid_pool_dummy       rg_pool;
+  uplink_request_processor_spy   ul_request_processor;
+  uplink_pdu_slot_repository_spy pdu_repo;
+  const unsigned                 sector_id         = 0;
+  const unsigned                 headroom_in_slots = 2;
+  const subcarrier_spacing       scs               = subcarrier_spacing::kHz15;
+  const slot_point               slot              = {scs, 1, 0};
+  fapi::prach_config             prach_cfg;
+  fapi::carrier_config           carrier_cfg = {0, 0, {}, {11, 51, 106, 0, 0}, 0, 0, 0, {}, {}, 0, 0, 0, 0};
+  downlink_pdu_validator_dummy   dl_pdu_validator;
+  uplink_pdu_validator_dummy     ul_pdu_validator;
+  error_message_notifier_spy     error_notifier_spy;
+  manual_task_worker             worker;
+  fapi_to_phy_translator_config  config = {sector_id, headroom_in_slots, false, scs, scs, prach_cfg, carrier_cfg, {0}};
   fapi_to_phy_translator_dependencies dependencies = {
       &srslog::fetch_basic_logger("FAPI"),
       &dl_processor_pool,
       &rg_pool,
       &dl_pdu_validator,
       &ul_request_processor,
-      &rg_pool,
       &pdu_repo,
       &ul_pdu_validator,
       std::move(std::get<std::unique_ptr<precoding_matrix_repository>>(generate_precoding_matrix_tables(1, 0))),
@@ -252,7 +257,7 @@ protected:
 public:
   fapi_to_phy_translator_fixture() : worker(1), translator(config, std::move(dependencies))
   {
-    translator.set_slot_error_message_notifier(error_notifier_spy);
+    translator.set_error_message_notifier(error_notifier_spy);
     translator.handle_new_slot(slot);
   }
 };
@@ -270,9 +275,10 @@ TEST_F(fapi_to_phy_translator_fixture, downlink_processor_is_configured_on_new_d
   ASSERT_EQ(rg_pool.get_getter_count(), 0);
 
   fapi::dl_tti_request_message msg;
-  msg.sfn                     = slot.sfn();
-  msg.slot                    = slot.slot_index();
-  msg.is_last_message_in_slot = false;
+  msg.sfn  = slot.sfn();
+  msg.slot = slot.slot_index();
+  // Add a PDU to the message.
+  msg.pdus.emplace_back();
 
   translator.dl_tti_request(msg);
 
@@ -280,28 +286,6 @@ TEST_F(fapi_to_phy_translator_fixture, downlink_processor_is_configured_on_new_d
   ASSERT_TRUE(dl_processor_pool.processor(slot).has_configure_resource_grid_method_been_called());
 
   ASSERT_FALSE(error_notifier_spy.has_on_error_indication_been_called());
-}
-
-TEST_F(fapi_to_phy_translator_fixture,
-       when_is_last_message_in_slot_flag_is_enabled_controller_is_released_at_the_dl_tti_handling)
-{
-  ASSERT_FALSE(dl_processor_pool.processor(slot).has_configure_resource_grid_method_been_called());
-  ASSERT_EQ(rg_pool.get_getter_count(), 0);
-
-  fapi::dl_tti_request_message msg;
-  msg.sfn                     = slot.sfn();
-  msg.slot                    = slot.slot_index();
-  msg.is_last_message_in_slot = true;
-
-  translator.dl_tti_request(msg);
-
-  // Assert that the downlink processor is configured.
-  ASSERT_TRUE(dl_processor_pool.processor(slot).has_configure_resource_grid_method_been_called());
-
-  // Assert that the resource grid has not been set to zero.
-  ASSERT_EQ(rg_pool.get_getter_count(), 0);
-  ASSERT_FALSE(error_notifier_spy.has_on_error_indication_been_called());
-  ASSERT_TRUE(dl_processor_pool.processor(slot).has_finish_processing_pdus_method_been_called());
 }
 
 TEST_F(fapi_to_phy_translator_fixture, dl_ssb_pdu_is_processed)
@@ -363,9 +347,10 @@ TEST_F(fapi_to_phy_translator_fixture, receiving_a_dl_tti_request_sends_previous
   ASSERT_EQ(rg_pool.get_getter_count(), 0);
 
   fapi::dl_tti_request_message msg;
-  msg.sfn                     = slot.sfn();
-  msg.slot                    = slot.slot_index();
-  msg.is_last_message_in_slot = false;
+  msg.sfn  = slot.sfn();
+  msg.slot = slot.slot_index();
+  // Add a pdu to the message.
+  msg.pdus.emplace_back();
 
   // Increase the slots.
   for (unsigned i = 1; i != headroom_in_slots; ++i) {
@@ -396,9 +381,8 @@ TEST_F(fapi_to_phy_translator_fixture, receiving_a_dl_tti_request_from_a_slot_de
   translator.handle_new_slot(current_slot);
 
   fapi::dl_tti_request_message msg;
-  msg.sfn                     = current_slot.sfn();
-  msg.slot                    = current_slot.slot_index();
-  msg.is_last_message_in_slot = false;
+  msg.sfn  = current_slot.sfn();
+  msg.slot = current_slot.slot_index();
 
   // Increase the slots.
   for (unsigned i = 0, e = headroom_in_slots + 1; i != e; ++i) {
@@ -426,9 +410,10 @@ TEST_F(fapi_to_phy_translator_fixture, message_received_is_sended_when_a_message
   ASSERT_EQ(rg_pool.get_getter_count(), 0);
 
   fapi::dl_tti_request_message msg;
-  msg.sfn                     = slot.sfn();
-  msg.slot                    = slot.slot_index();
-  msg.is_last_message_in_slot = false;
+  msg.sfn  = slot.sfn();
+  msg.slot = slot.slot_index();
+  // Add a PDU to the message.
+  msg.pdus.emplace_back();
 
   // Send a DL_TTI.request.
   translator.dl_tti_request(msg);
@@ -475,7 +460,6 @@ TEST_F(fapi_to_phy_translator_fixture, empty_ul_tti_generates_request_when_allow
        &rg_pool,
        &dl_pdu_validator,
        &ul_request_processor,
-       &rg_pool,
        &pdu_repo,
        &ul_pdu_validator,
        std::move(std::get<std::unique_ptr<precoding_matrix_repository>>(generate_precoding_matrix_tables(1, 0))),

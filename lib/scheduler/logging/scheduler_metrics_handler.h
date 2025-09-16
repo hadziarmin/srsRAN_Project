@@ -23,6 +23,7 @@
 #pragma once
 
 #include "scheduler_metrics_ue_configurator.h"
+#include "srsran/adt/flat_map.h"
 #include "srsran/adt/slotted_array.h"
 #include "srsran/adt/slotted_vector.h"
 #include "srsran/scheduler/scheduler_configurator.h"
@@ -31,7 +32,6 @@
 #include "srsran/scheduler/scheduler_metrics.h"
 #include "srsran/support/math/stats.h"
 #include "srsran/support/units.h"
-#include <unordered_map>
 
 namespace srsran {
 
@@ -143,26 +143,37 @@ class cell_metrics_handler final : public sched_metrics_ue_configurator
     unsigned nof_failed_pdcch_allocs = 0;
     // Number of failed UCI allocation attempts.
     unsigned nof_failed_uci_allocs = 0;
+    // Number of MSG3 OKs.
+    unsigned nof_msg3_ok = 0;
+    // Number of MSG3 KOs.
+    unsigned nof_msg3_nok = 0;
+    // Total PRACH delay in slots.
+    unsigned sum_prach_delay_slots = 0;
+    // Number of failed PDSCH allocations due to late HARQs.
+    unsigned nof_failed_pdsch_allocs_late_harqs = 0;
+    // Number of failed PUSCH allocations due to late HARQs.
+    unsigned nof_failed_pusch_allocs_late_harqs = 0;
+    // Number of UE events not reported because the maximum number of events was reached.
+    unsigned filtered_events_counter = 0;
+    // Number of RBs used for PUCCH in the reporting period.
+    unsigned pucch_rbs_used = 0;
   };
 
-  scheduler_metrics_notifier&     notifier;
-  const std::chrono::milliseconds report_period;
-  const cell_configuration&       cell_cfg;
+  scheduler_cell_metrics_notifier& notifier;
+  const std::chrono::milliseconds  report_period;
+  const cell_configuration&        cell_cfg;
 
   // Derived values.
   const unsigned nof_slots_per_sf;
   const unsigned report_period_slots;
 
   slot_point last_slot_tx;
-  slot_point next_report_slot;
 
   slotted_id_vector<du_ue_index_t, ue_metric_context> ues;
-  std::unordered_map<rnti_t, du_ue_index_t>           rnti_to_ue_index_lookup;
+  flat_map<rnti_t, du_ue_index_t>                     rnti_to_ue_index_lookup;
 
   /// Metrics tracked that are reset on every report.
   non_persistent_data data;
-
-  scheduler_cell_metrics next_report;
 
 public:
   /// \brief Creates a scheduler UE metrics handler for a given cell. In case the metrics_report_period is zero,
@@ -170,6 +181,7 @@ public:
   explicit cell_metrics_handler(
       const cell_configuration&                                                      cell_cfg_,
       const std::optional<sched_cell_configuration_request_message::metrics_config>& metrics_cfg);
+  ~cell_metrics_handler() override;
 
   /// \brief Register creation of a UE.
   void handle_ue_creation(du_ue_index_t ue_index, rnti_t rnti, pci_t pcell_pci) override;
@@ -181,7 +193,10 @@ public:
   void handle_ue_deletion(du_ue_index_t ue_index) override;
 
   /// \brief Register detected PRACH.
-  void handle_rach_indication(const rach_indication_message& msg);
+  void handle_rach_indication(const rach_indication_message& msg, slot_point sl_tx);
+
+  /// \brief Register MSG3 CRC indication.
+  void handle_msg3_crc_indication(const ul_crc_pdu_indication& crc_pdu);
 
   /// \brief Register CRC indication.
   void handle_crc_indication(slot_point sl_rx, const ul_crc_pdu_indication& crc_pdu, units::bytes tbs);
@@ -216,17 +231,28 @@ public:
   /// \brief Handle Error Indication reported to the scheduler for a given cell.
   void handle_error_indication();
 
+  /// \brief Handle late DL HARQ indication.
+  void handle_late_dl_harqs();
+
+  /// \brief Handle late UL HARQ indication.
+  void handle_late_ul_harqs();
+
   /// \brief Handle results stored in the scheduler result and push new entry.
   void push_result(slot_point sl_tx, const sched_result& slot_result, std::chrono::microseconds slot_decision_latency);
 
   /// \brief Checks whether the metrics reporting is active.
-  bool connected() const { return report_period != std::chrono::milliseconds{0}; }
+  bool enabled() const { return report_period_slots != 0; }
+
+  /// \brief Called when the cell is stopped. This will trigger a cell stop report.
+  void handle_cell_deactivation();
 
 private:
   void handle_pucch_sinr(ue_metric_context& u, float sinr);
   void handle_csi_report(ue_metric_context& u, const csi_report_data& csi);
   void report_metrics();
   void handle_slot_result(const sched_result& slot_result, std::chrono::microseconds slot_decision_latency);
+
+  std::vector<scheduler_cell_event> pending_events;
 };
 
 /// Handler of metrics for all the UEs and cells of the scheduler.

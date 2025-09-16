@@ -29,6 +29,7 @@
 #include "ofh_tx_window_checker.h"
 #include "ofh_uplink_request_handler_metrics_collector.h"
 #include "srsran/ofh/ethernet/ethernet_frame_pool.h"
+#include "srsran/ofh/serdes/ofh_cplane_message_properties.h"
 #include "srsran/ofh/transmitter/ofh_transmitter_timing_parameters.h"
 #include "srsran/ofh/transmitter/ofh_uplink_request_handler.h"
 #include "srsran/ran/tdd/tdd_ul_dl_config.h"
@@ -56,6 +57,8 @@ struct uplink_request_handler_impl_config {
   std::chrono::microseconds ul_processing_time;
   /// Transmission window timing parameters for delay management.
   tx_window_timing_parameters tx_timing_params;
+  /// If set to true, logs late events as warnings, otherwise as info.
+  bool enable_log_warnings_for_lates;
 };
 
 /// Uplink request handler implmentation dependencies.
@@ -110,6 +113,7 @@ private:
   std::shared_ptr<ether::eth_frame_pool>                  frame_pool;
   error_notifier&                                         err_notifier;
   uplink_request_handler_metrics_collector                metrics_collector;
+  bool                                                    enable_log_warnings_for_lates;
 };
 
 } // namespace ofh

@@ -74,10 +74,11 @@ public:
   // ngap_control_message_handler
   async_task<bool> handle_ue_context_release_request(const cu_cp_ue_context_release_request& msg) override;
   async_task<ngap_handover_preparation_response>
-                        handle_handover_preparation_request(const ngap_handover_preparation_request& msg) override;
-  void                  handle_inter_cu_ho_rrc_recfg_complete(const ue_index_t           ue_index,
-                                                              const nr_cell_global_id_t& cgi,
-                                                              const unsigned             tac) override;
+       handle_handover_preparation_request(const ngap_handover_preparation_request& msg) override;
+  void handle_ul_ran_status_transfer(const ngap_ul_ran_status_transfer& ul_ran_status_transfer) override;
+  void handle_inter_cu_ho_rrc_recfg_complete(const ue_index_t           ue_index,
+                                             const nr_cell_global_id_t& cgi,
+                                             const unsigned             tac) override;
   const ngap_context_t& get_ngap_context() const override { return context; }
   void             handle_ul_ue_associated_nrppa_transport(ue_index_t ue_index, const byte_buffer& nrppa_pdu) override;
   async_task<void> handle_ul_non_ue_associated_nrppa_transport(const byte_buffer& nrppa_pdu) override;
@@ -91,6 +92,10 @@ public:
   // ngap_ue_context_removal_handler
   void remove_ue_context(ue_index_t ue_index) override;
 
+  // ngap_ue_id_translator
+  ue_index_t  get_ue_index(const amf_ue_id_t& amf_ue_id) override;
+  amf_ue_id_t get_amf_ue_id(const ue_index_t& ue_index) override;
+
   ngap_message_handler&                        get_ngap_message_handler() override { return *this; }
   ngap_event_handler&                          get_ngap_event_handler() override { return *this; }
   ngap_connection_manager&                     get_ngap_connection_manager() override { return *this; }
@@ -101,17 +106,33 @@ public:
   ngap_metrics_handler&                        get_metrics_handler() override { return *this; }
   ngap_statistics_handler&                     get_ngap_statistics_handler() override { return *this; }
   ngap_ue_context_removal_handler&             get_ngap_ue_context_removal_handler() override { return *this; }
+  ngap_ue_id_translator&                       get_ngap_ue_id_translator() override { return *this; }
 
 private:
   class tx_pdu_notifier_with_logging final : public ngap_message_notifier
   {
   public:
-    tx_pdu_notifier_with_logging(ngap_impl& parent_, std::unique_ptr<ngap_message_notifier> decorated_) :
-      parent(parent_), decorated(std::move(decorated_))
+    tx_pdu_notifier_with_logging(ngap_impl& parent_) : parent(parent_) {}
+
+    ~tx_pdu_notifier_with_logging()
     {
+      if (decorated) {
+        decorated.reset();
+      }
     }
 
-    void on_new_message(const ngap_message& msg) override;
+    void connect(std::unique_ptr<ngap_message_notifier> decorated_) { decorated = std::move(decorated_); }
+
+    void disconnect()
+    {
+      if (is_connected()) {
+        decorated.reset();
+      }
+    }
+
+    bool is_connected() const { return decorated != nullptr; }
+
+    [[nodiscard]] bool on_new_message(const ngap_message& msg) override;
 
   private:
     ngap_impl&                             parent;
@@ -149,6 +170,11 @@ private:
   /// \brief Notify about the reception of a Paging message.
   /// \param[in] msg The received Paging message.
   void handle_paging(const asn1::ngap::paging_s& msg);
+
+  /// \brief Send a handover failure to the AMF.
+  /// \param[in] amf_ue_id The AMF UE NGAP ID.
+  /// \param[in] cause The cause of the handover failure.
+  void send_handover_failure(uint64_t amf_ue_id, const std::string& cause);
 
   /// \brief Notify about the reception of a Handover request message.
   /// \param[in] msg The received handover request message.
@@ -211,7 +237,7 @@ private:
 
   ngap_connection_handler conn_handler;
 
-  std::unique_ptr<tx_pdu_notifier_with_logging> tx_pdu_notifier;
+  tx_pdu_notifier_with_logging tx_pdu_notifier;
 };
 
 } // namespace srs_cu_cp

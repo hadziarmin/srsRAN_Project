@@ -46,8 +46,12 @@ pdcch_resource_allocator_impl::pdcch_resource_allocator_impl(const cell_configur
           pdcch_candidates_common_ss_configuration{aggr_lvl, nof_candidates, cs_cfg.get_nof_cces()});
       aggr_lvl_candidates.candidate_crbs.resize(aggr_lvl_candidates.candidates.size());
       for (unsigned i = 0, e = aggr_lvl_candidates.candidates.size(); i != e; ++i) {
-        aggr_lvl_candidates.candidate_crbs[i] = pdcch_helper::cce_to_prb_mapping(
-            cell_cfg.dl_cfg_common.init_dl_bwp.generic_params, cs_cfg, cell_cfg.pci, aggr_lvl, i);
+        aggr_lvl_candidates.candidate_crbs[i] =
+            pdcch_helper::cce_to_prb_mapping(cell_cfg.dl_cfg_common.init_dl_bwp.generic_params,
+                                             cs_cfg,
+                                             cell_cfg.pci,
+                                             aggr_lvl,
+                                             aggr_lvl_candidates.candidates[i]);
 
         // Convert PRBs to CRBs.
         for (uint16_t& prb_idx : aggr_lvl_candidates.candidate_crbs[i]) {
@@ -255,6 +259,14 @@ bool pdcch_resource_allocator_impl::cancel_last_pdcch(cell_slot_resource_allocat
 {
   pdcch_slot_allocator& pdcch_alloc = get_pdcch_slot_alloc(slot_alloc.slot);
   return pdcch_alloc.cancel_last_pdcch(slot_alloc);
+}
+
+void pdcch_resource_allocator_impl::stop()
+{
+  for (auto& sl_record : slot_records) {
+    sl_record->clear();
+  }
+  last_sl_ind = {};
 }
 
 pdcch_slot_allocator& pdcch_resource_allocator_impl::get_pdcch_slot_alloc(slot_point sl)

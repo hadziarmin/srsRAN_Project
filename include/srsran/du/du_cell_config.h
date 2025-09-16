@@ -53,6 +53,8 @@ struct drx_params {
   std::chrono::milliseconds on_duration;
   std::chrono::milliseconds long_cycle;
   std::chrono::milliseconds inactivity_timer;
+  unsigned                  retx_timer_dl;
+  unsigned                  retx_timer_ul;
 };
 
 /// Parameters that are used to initialize or build the \c MAC-CellGroupConfig, TS 38.331.
@@ -100,6 +102,9 @@ struct du_cell_config {
 
   /// \c cellSelectionInfo, \c SIB1, as per TS 38.331.
   cell_selection_info cell_sel_info;
+
+  /// \c cellAccessRelatedInfo, sent in \c SIB1, as per TS 38.331.
+  cell_access_related_info cell_acc_rel_info;
 
   /// Content and scheduling information of SI-messages.
   std::optional<si_scheduling_info_config> si_config;

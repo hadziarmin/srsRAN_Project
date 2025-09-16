@@ -21,7 +21,9 @@
  */
 
 #include "ngap_test_helpers.h"
+#include "srsran/asn1/ngap/ngap_ies.h"
 #include "srsran/asn1/ngap/ngap_pdu_contents.h"
+#include "srsran/ran/cu_types.h"
 #include "srsran/support/test_utils.h"
 #include <gtest/gtest.h>
 
@@ -56,14 +58,57 @@ protected:
     return ue_index;
   }
 
-  bool was_conversion_successful(ngap_message pdu_session_resource_setup_request, pdu_session_id_t pdu_session_id) const
+  bool
+  was_pdu_session_type_conversion_successful(const asn1::ngap::pdu_session_res_setup_item_su_req_s& asn1_request_item,
+                                             const pdu_session_type_t&                              type) const
+  {
+    // Unpack request transfer.
+    asn1::ngap::pdu_session_res_setup_request_transfer_s asn1_setup_req_transfer;
+    asn1::cbit_ref bref({asn1_request_item.pdu_session_res_setup_request_transfer.begin(),
+                         asn1_request_item.pdu_session_res_setup_request_transfer.end()});
+
+    if (asn1_setup_req_transfer.unpack(bref) != asn1::SRSASN_SUCCESS) {
+      test_logger.error("Couldn't unpack PDU Session Resource Setup Request Transfer PDU");
+      return false;
+    }
+
+    // Check that the conversion from ASN.1 PDU Session Type to PDU Session Type is correct.
+    if (asn1_setup_req_transfer->pdu_session_type == asn1::ngap::pdu_session_type_e::ipv4) {
+      return type == pdu_session_type_t::ipv4;
+    }
+    if (asn1_setup_req_transfer->pdu_session_type == asn1::ngap::pdu_session_type_e::ipv6) {
+      return type == pdu_session_type_t::ipv6;
+    }
+    if (asn1_setup_req_transfer->pdu_session_type == asn1::ngap::pdu_session_type_e::ipv4v6) {
+      return type == pdu_session_type_t::ipv4v6;
+    }
+    if (asn1_setup_req_transfer->pdu_session_type == asn1::ngap::pdu_session_type_e::ethernet) {
+      return type == pdu_session_type_t::ethernet;
+    }
+    return false; // Unsupported type.
+  }
+
+  bool was_conversion_successful(ngap_message       pdu_session_resource_setup_request,
+                                 pdu_session_id_t   pdu_session_id,
+                                 pdu_session_type_t pdu_session_type) const
   {
     bool test_1 = pdu_session_resource_setup_request.pdu.init_msg()
                       .value.pdu_session_res_setup_request()
                       ->pdu_session_res_setup_list_su_req.size() ==
                   cu_cp_notifier.last_request.pdu_session_res_setup_items.size();
 
-    bool test_2 = cu_cp_notifier.last_request.pdu_session_res_setup_items[pdu_session_id].pdu_session_type == "ipv4";
+    // Find the ASN.1 PDU session resource setup item for the given PDU session ID.
+    asn1::ngap::pdu_session_res_setup_item_su_req_s asn1_request_item = {};
+    for (const auto& item : pdu_session_resource_setup_request.pdu.init_msg()
+                                .value.pdu_session_res_setup_request()
+                                ->pdu_session_res_setup_list_su_req) {
+      if (uint_to_pdu_session_id(item.pdu_session_id) == pdu_session_id) {
+        asn1_request_item = item;
+        break;
+      }
+    }
+
+    bool test_2 = was_pdu_session_type_conversion_successful(asn1_request_item, pdu_session_type);
 
     return test_1 && test_2;
   }
@@ -145,31 +190,19 @@ protected:
         return false;
       }
 
-      if (test_metrics.pdu_session_metrics.at(s_nssai).nof_pdu_sessions_failed_to_setup.size() !=
-          metrics.nof_pdu_sessions_failed_to_setup.size()) {
-        test_logger.error("Size of PDU sessions failed to setup for s_nssai {} mismatch: expected {}, got {}",
-                          s_nssai,
-                          metrics.nof_pdu_sessions_failed_to_setup.size(),
-                          test_metrics.pdu_session_metrics.at(s_nssai).nof_pdu_sessions_failed_to_setup.size());
-        return false;
-      }
+      for (unsigned idx = 0; idx < metrics.nof_pdu_sessions_failed_to_setup.size(); ++idx) {
+        unsigned expected_count = metrics.nof_pdu_sessions_failed_to_setup.get_count(idx);
+        unsigned test_count =
+            test_metrics.pdu_session_metrics.at(s_nssai).nof_pdu_sessions_failed_to_setup.get_count(idx);
 
-      for (const auto& [cause, count] : metrics.nof_pdu_sessions_failed_to_setup) {
-        if (test_metrics.pdu_session_metrics.at(s_nssai).nof_pdu_sessions_failed_to_setup.find(cause) ==
-            ngap->get_metrics_handler()
-                .handle_ngap_metrics_report_request()
-                .metrics.pdu_session_metrics.at(s_nssai)
-                .nof_pdu_sessions_failed_to_setup.end()) {
-          test_logger.error("PDU sessions failed to setup for s_nssai {} cause {} not found", s_nssai, cause);
-          return false;
-        }
+        if (expected_count != test_count) {
+          test_logger.error(
+              "PDU sessions failed to setup for s_nssai {} cause {} mismatch: expected {}, got {}",
+              s_nssai,
+              test_metrics.pdu_session_metrics.at(s_nssai).nof_pdu_sessions_failed_to_setup.get_cause(idx),
+              expected_count,
+              test_count);
 
-        if (test_metrics.pdu_session_metrics.at(s_nssai).nof_pdu_sessions_failed_to_setup.at(cause) != count) {
-          test_logger.error("PDU sessions failed to setup for s_nssai {} cause {} mismatch: expected {}, got {}",
-                            s_nssai,
-                            test_metrics.pdu_session_metrics.at(s_nssai).nof_pdu_sessions_failed_to_setup.at(cause),
-                            cause,
-                            count);
           return false;
         }
       }
@@ -219,11 +252,16 @@ TEST_F(ngap_pdu_session_resource_setup_procedure_test,
   auto& ue = test_ues.at(ue_index);
 
   ngap_message pdu_session_resource_setup_request = generate_valid_pdu_session_resource_setup_request_message(
-      ue.amf_ue_id.value(), ue.ran_ue_id.value(), {{pdu_session_id, {{uint_to_qos_flow_id(1), 9}}}});
+      ue.amf_ue_id.value(),
+      ue.ran_ue_id.value(),
+      {{pdu_session_id, {pdu_session_type_t::ipv4, {{uint_to_qos_flow_id(1), 9}}}}});
   ngap->handle_message(pdu_session_resource_setup_request);
 
   // Check conversion in adapter.
-  ASSERT_TRUE(was_conversion_successful(pdu_session_resource_setup_request, pdu_session_id));
+  ASSERT_TRUE(was_conversion_successful(
+      pdu_session_resource_setup_request,
+      pdu_session_id,
+      cu_cp_notifier.last_request.pdu_session_res_setup_items[pdu_session_id].pdu_session_type));
 
   // Check that PDU Session Resource Setup Request was valid.
   ASSERT_TRUE(was_pdu_session_resource_setup_request_valid());
@@ -232,6 +270,140 @@ TEST_F(ngap_pdu_session_resource_setup_procedure_test,
   ASSERT_TRUE(check_metrics_report(
       "open5gs-amf0",
       {{{slice_service_type{1}, slice_differentiator::create(0x0027db).value()}, pdu_session_metrics_t{1, 1, {}}}}));
+}
+
+/// Test valid PDU Session Resource Setup Request.
+TEST_F(ngap_pdu_session_resource_setup_procedure_test,
+       when_valid_pdu_session_resource_setup_request_with_ipv4_session_type_received_then_pdu_session_setup_succeeds)
+{
+  // Test preamble.
+  ue_index_t ue_index = this->start_procedure();
+
+  // Inject PDU Session Resource Setup Request.
+  pdu_session_id_t pdu_session_id = uint_to_pdu_session_id(test_rgen::uniform_int<uint16_t>(
+      pdu_session_id_to_uint(pdu_session_id_t::min), pdu_session_id_to_uint(pdu_session_id_t::max)));
+
+  auto& ue = test_ues.at(ue_index);
+
+  ngap_message pdu_session_resource_setup_request = generate_valid_pdu_session_resource_setup_request_message(
+      ue.amf_ue_id.value(),
+      ue.ran_ue_id.value(),
+      {{pdu_session_id, {pdu_session_type_t::ipv4, {{uint_to_qos_flow_id(1), 9}}}}});
+  ngap->handle_message(pdu_session_resource_setup_request);
+
+  // Check conversion in adapter.
+  ASSERT_TRUE(was_conversion_successful(
+      pdu_session_resource_setup_request,
+      pdu_session_id,
+      cu_cp_notifier.last_request.pdu_session_res_setup_items[pdu_session_id].pdu_session_type));
+
+  // Check that PDU Session Resource Setup Request was valid.
+  ASSERT_TRUE(was_pdu_session_resource_setup_request_valid());
+
+  // Check that metrics contain the successful PDU session setup.
+  ASSERT_TRUE(check_metrics_report(
+      "open5gs-amf0",
+      {{{slice_service_type{1}, slice_differentiator::create(0x0027db).value()}, pdu_session_metrics_t{1, 1, {}}}}));
+}
+
+/// Test valid PDU Session Resource Setup Request.
+TEST_F(ngap_pdu_session_resource_setup_procedure_test,
+       when_valid_pdu_session_resource_setup_request_with_ipv6_session_type_received_then_pdu_session_setup_succeeds)
+{
+  // Test preamble.
+  ue_index_t ue_index = this->start_procedure();
+
+  // Inject PDU Session Resource Setup Request.
+  pdu_session_id_t pdu_session_id = uint_to_pdu_session_id(test_rgen::uniform_int<uint16_t>(
+      pdu_session_id_to_uint(pdu_session_id_t::min), pdu_session_id_to_uint(pdu_session_id_t::max)));
+
+  auto& ue = test_ues.at(ue_index);
+
+  ngap_message pdu_session_resource_setup_request = generate_valid_pdu_session_resource_setup_request_message(
+      ue.amf_ue_id.value(),
+      ue.ran_ue_id.value(),
+      {{pdu_session_id, {pdu_session_type_t::ipv6, {{uint_to_qos_flow_id(1), 9}}}}});
+  ngap->handle_message(pdu_session_resource_setup_request);
+
+  // Check conversion in adapter.
+  ASSERT_TRUE(was_conversion_successful(
+      pdu_session_resource_setup_request,
+      pdu_session_id,
+      cu_cp_notifier.last_request.pdu_session_res_setup_items[pdu_session_id].pdu_session_type));
+
+  // Check that PDU Session Resource Setup Request was valid.
+  ASSERT_TRUE(was_pdu_session_resource_setup_request_valid());
+
+  // Check that metrics contain the successful PDU session setup.
+  ASSERT_TRUE(check_metrics_report(
+      "open5gs-amf0",
+      {{{slice_service_type{1}, slice_differentiator::create(0x0027db).value()}, pdu_session_metrics_t{1, 1, {}}}}));
+}
+
+/// Test valid PDU Session Resource Setup Request.
+TEST_F(
+    ngap_pdu_session_resource_setup_procedure_test,
+    when_valid_pdu_session_resource_setup_request_with_ethernet_session_type_received_then_pdu_session_setup_succeeds)
+{
+  // Test preamble.
+  ue_index_t ue_index = this->start_procedure();
+
+  // Inject PDU Session Resource Setup Request.
+  pdu_session_id_t pdu_session_id = uint_to_pdu_session_id(test_rgen::uniform_int<uint16_t>(
+      pdu_session_id_to_uint(pdu_session_id_t::min), pdu_session_id_to_uint(pdu_session_id_t::max)));
+
+  auto& ue = test_ues.at(ue_index);
+
+  ngap_message pdu_session_resource_setup_request = generate_valid_pdu_session_resource_setup_request_message(
+      ue.amf_ue_id.value(),
+      ue.ran_ue_id.value(),
+      {{pdu_session_id, {pdu_session_type_t::ethernet, {{uint_to_qos_flow_id(1), 9}}}}});
+  ngap->handle_message(pdu_session_resource_setup_request);
+
+  // Check conversion in adapter.
+  ASSERT_TRUE(was_conversion_successful(
+      pdu_session_resource_setup_request,
+      pdu_session_id,
+      cu_cp_notifier.last_request.pdu_session_res_setup_items[pdu_session_id].pdu_session_type));
+
+  // Check that PDU Session Resource Setup Request was valid.
+  ASSERT_TRUE(was_pdu_session_resource_setup_request_valid());
+
+  // Check that metrics contain the successful PDU session setup.
+  ASSERT_TRUE(check_metrics_report(
+      "open5gs-amf0",
+      {{{slice_service_type{1}, slice_differentiator::create(0x0027db).value()}, pdu_session_metrics_t{1, 1, {}}}}));
+}
+
+/// Test valid PDU Session Resource Setup Request.
+TEST_F(ngap_pdu_session_resource_setup_procedure_test,
+       when_valid_pdu_session_resource_setup_request_with_ipv4v6_session_type_received_then_pdu_session_setup_fails)
+{
+  // Test preamble.
+  ue_index_t ue_index = this->start_procedure();
+
+  // Inject PDU Session Resource Setup Request.
+  pdu_session_id_t pdu_session_id = uint_to_pdu_session_id(test_rgen::uniform_int<uint16_t>(
+      pdu_session_id_to_uint(pdu_session_id_t::min), pdu_session_id_to_uint(pdu_session_id_t::max)));
+
+  auto& ue = test_ues.at(ue_index);
+
+  ngap_message pdu_session_resource_setup_request = generate_valid_pdu_session_resource_setup_request_message(
+      ue.amf_ue_id.value(),
+      ue.ran_ue_id.value(),
+      {{pdu_session_id, {pdu_session_type_t::ipv4v6, {{uint_to_qos_flow_id(1), 9}}}}});
+  ngap->handle_message(pdu_session_resource_setup_request);
+
+  // Check that PDU Session Resource Setup Request was invalid.
+  ASSERT_TRUE(was_pdu_session_resource_setup_request_invalid());
+
+  // Check that metrics contain the failed PDU session setup.
+  pdu_session_metrics_t expected_pdu_session_metrics = {1, 0, {}};
+  expected_pdu_session_metrics.nof_pdu_sessions_failed_to_setup.increase(cause_protocol_t::unspecified);
+
+  ASSERT_TRUE(check_metrics_report(
+      "open5gs-amf0",
+      {{{slice_service_type{1}, slice_differentiator::create(0x0027db).value()}, expected_pdu_session_metrics}}));
 }
 
 /// Test invalid PDU Session Resource Setup Request.
@@ -252,10 +424,13 @@ TEST_F(ngap_pdu_session_resource_setup_procedure_test,
   ASSERT_TRUE(was_pdu_session_resource_setup_request_invalid());
 
   // Check that metrics contain the failed PDU session setup.
+  pdu_session_metrics_t expected_pdu_session_metrics = {2, 0, {}};
+  expected_pdu_session_metrics.nof_pdu_sessions_failed_to_setup.increase(
+      ngap_cause_radio_network_t::multiple_pdu_session_id_instances);
+
   ASSERT_TRUE(check_metrics_report(
       "open5gs-amf0",
-      {{{slice_service_type{1}, slice_differentiator::create(0x0027db).value()},
-        pdu_session_metrics_t{2, 0, {{ngap_cause_radio_network_t::multiple_pdu_session_id_instances, 1}}}}}));
+      {{{slice_service_type{1}, slice_differentiator::create(0x0027db).value()}, expected_pdu_session_metrics}}));
 }
 
 /// Test invalid PDU Session Resource Setup Request.
@@ -294,7 +469,9 @@ TEST_F(ngap_pdu_session_resource_setup_procedure_test, when_security_not_enabled
       pdu_session_id_to_uint(pdu_session_id_t::min), pdu_session_id_to_uint(pdu_session_id_t::max)));
 
   ngap_message pdu_session_resource_setup_request = generate_valid_pdu_session_resource_setup_request_message(
-      ue.amf_ue_id.value(), ue.ran_ue_id.value(), {{pdu_session_id, {{uint_to_qos_flow_id(1), 9}}}});
+      ue.amf_ue_id.value(),
+      ue.ran_ue_id.value(),
+      {{pdu_session_id, {pdu_session_type_t::ipv4, {{uint_to_qos_flow_id(1), 9}}}}});
   ngap->handle_message(pdu_session_resource_setup_request);
 
   // Check that Error Indication has been sent to AMF.

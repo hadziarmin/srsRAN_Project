@@ -115,7 +115,9 @@ fdd_dl_tcp = defaultdict(
 )
 
 
-def get_maximum_throughput_tdd(bandwidth: int, direction: IPerfDir, protocol: IPerfProto) -> int:
+def get_maximum_throughput_tdd(
+    *, bandwidth: int, direction: IPerfDir, protocol: IPerfProto  # The "*" enforces keyword-only arguments
+) -> int:
     """
     Get the maximum E2E TDD throughput for bandwidth, direction and transport protocol
     """
@@ -132,7 +134,9 @@ def get_maximum_throughput_tdd(bandwidth: int, direction: IPerfDir, protocol: IP
     return 0
 
 
-def get_maximum_throughput_fdd(bandwidth: int, direction: IPerfDir, protocol: IPerfProto) -> int:
+def get_maximum_throughput_fdd(
+    *, bandwidth: int, direction: IPerfDir, protocol: IPerfProto  # The "*" enforces keyword-only arguments
+) -> int:
     """
     Get the maximum E2E FDD throughput for bandwidth, direction and transport protocol
     """
@@ -149,16 +153,19 @@ def get_maximum_throughput_fdd(bandwidth: int, direction: IPerfDir, protocol: IP
     return 0
 
 
-def get_maximum_throughput(bandwidth: int, band: int, direction: IPerfDir, protocol: IPerfProto) -> int:
+def get_maximum_throughput(
+    *, bandwidth: int, band: int, direction: IPerfDir, protocol: IPerfProto  # The "*" enforces keyword-only arguments
+) -> int:
     """
     Get the maximum E2E throughput for bandwidth, duplex-type, direction and transport protocol
     """
     if is_tdd(band):
-        return get_maximum_throughput_tdd(bandwidth, direction, protocol)
-    return get_maximum_throughput_fdd(bandwidth, direction, protocol)
+        return get_maximum_throughput_tdd(bandwidth=bandwidth, direction=direction, protocol=protocol)
+    return get_maximum_throughput_fdd(bandwidth=bandwidth, direction=direction, protocol=protocol)
 
 
 def get_max_theoretical_bitrate(
+    *,  # This enforces keyword-only arguments
     bandwidth: int,
     band: int,
     nof_antennas: int,
@@ -195,6 +202,7 @@ def get_max_theoretical_bitrate(
 
 
 def get_peak_average_bitrate(
+    *,  # This enforces keyword-only arguments
     iperf_duration: int,
     metrics: Metrics,
 ):
@@ -211,6 +219,7 @@ def get_peak_average_bitrate(
 
 # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
 def assess_iperf_bitrate(
+    *,  # This enforces keyword-only arguments
     bw: int,
     band: int,
     nof_antennas_dl: int,
@@ -218,36 +227,41 @@ def assess_iperf_bitrate(
     pusch_mcs_table: str,
     iperf_duration: int,
     metrics: Metrics,
+    dl_brate_threshold: float = 0,
+    ul_brate_threshold: float = 0,
 ):
     """
     Check if the achieved bitrate values are above the expected thresholds
     """
-    min_dl_bitrate = get_max_theoretical_bitrate(
-        bw,
-        band,
-        nof_antennas_dl,
-        True,
-        QAMTable.QAM256 if pdsch_mcs_table == "qam256" else QAMTable.QAM64,
-    )
-
-    min_ul_bitrate = get_max_theoretical_bitrate(
-        bw,
-        band,
-        1,
-        False,
-        QAMTable.QAM256 if pusch_mcs_table == "qam256" else QAMTable.QAM64,
-    )
-
     # Defines the actual DL/UL bitrate as a percentage of the max theoretical bitrates
     effective_rate_coeff_dl = 0.66  # empirical value
     effective_rate_coeff_ul = 0.46  # empirical value
     # Defines the expected bitrate to be achived as a percentage of the DL/UL bitrates
     expected_to_max_coeff = 0.9
 
-    dl_brate_threshold = min_dl_bitrate * effective_rate_coeff_dl * expected_to_max_coeff
-    ul_brate_threshold = min_ul_bitrate * effective_rate_coeff_ul * expected_to_max_coeff
+    if dl_brate_threshold == 0:
+        min_dl_bitrate = get_max_theoretical_bitrate(
+            bandwidth=bw,
+            band=band,
+            nof_antennas=nof_antennas_dl,
+            is_dl=True,
+            qam=QAMTable.QAM256 if pdsch_mcs_table == "qam256" else QAMTable.QAM64,
+        )
+        dl_brate_threshold = min_dl_bitrate * effective_rate_coeff_dl * expected_to_max_coeff
 
-    dl_bitrate_peak_average, ul_bitrate_peak_average = get_peak_average_bitrate(iperf_duration, metrics)
+    if ul_brate_threshold == 0:
+        min_ul_bitrate = get_max_theoretical_bitrate(
+            bandwidth=bw,
+            band=band,
+            nof_antennas=1,
+            is_dl=False,
+            qam=QAMTable.QAM256 if pusch_mcs_table == "qam256" else QAMTable.QAM64,
+        )
+        ul_brate_threshold = min_ul_bitrate * effective_rate_coeff_ul * expected_to_max_coeff
+
+    dl_bitrate_peak_average, ul_bitrate_peak_average = get_peak_average_bitrate(
+        iperf_duration=iperf_duration, metrics=metrics
+    )
     dl_brate_assessment_ok = dl_bitrate_peak_average >= dl_brate_threshold
     ul_brate_assessment_ok = ul_bitrate_peak_average >= ul_brate_threshold
     if dl_brate_assessment_ok:

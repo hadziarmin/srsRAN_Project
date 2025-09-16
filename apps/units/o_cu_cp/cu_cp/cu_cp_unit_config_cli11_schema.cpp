@@ -132,14 +132,29 @@ static void configure_cli11_amf_item_args(CLI::App& app, cu_cp_unit_amf_config_i
   add_option(app, "--bind_addr", config.bind_addr, "Local IP address to bind for N2 interface")->check(CLI::ValidIPV4);
   add_option(app, "--bind_interface", config.bind_interface, "Network device to bind for N2 interface")
       ->capture_default_str();
-  add_option(app, "--sctp_rto_initial", config.sctp_rto_initial_ms, "SCTP initial RTO value in milliseconds");
-  add_option(app, "--sctp_rto_min", config.sctp_rto_min_ms, "SCTP RTO min in milliseconds");
-  add_option(app, "--sctp_rto_max", config.sctp_rto_max_ms, "SCTP RTO max in milliseconds");
-  add_option(app, "--sctp_init_max_attempts", config.sctp_init_max_attempts, "SCTP init max attempts");
-  add_option(app, "--sctp_max_init_timeo", config.sctp_max_init_timeo_ms, "SCTP max init timeout in milliseconds");
-  add_option(app, "--sctp_hb_interval", config.sctp_hb_interval_s, "SCTP heartbeat interval in seconds")
+  add_option(app,
+             "--sctp_rto_initial",
+             config.sctp_rto_initial_ms,
+             "SCTP initial RTO value in milliseconds (-1 to use system default)");
+  add_option(app, "--sctp_rto_min", config.sctp_rto_min_ms, "SCTP RTO min in milliseconds (-1 to use system default)");
+  add_option(app, "--sctp_rto_max", config.sctp_rto_max_ms, "SCTP RTO max in milliseconds (-1 to use system default)");
+  add_option(app,
+             "--sctp_init_max_attempts",
+             config.sctp_init_max_attempts,
+             "SCTP init max attempts (-1 to use system default)");
+  add_option(app,
+             "--sctp_max_init_timeo",
+             config.sctp_max_init_timeo_ms,
+             "SCTP max init timeout in milliseconds (-1 to use system default)");
+  add_option(app,
+             "--sctp_hb_interval",
+             config.sctp_hb_interval_ms,
+             "SCTP heartbeat interval in milliseconds (-1 to use system default)")
       ->capture_default_str();
-  add_option(app, "--sctp_assoc_max_retx", config.sctp_assoc_max_retx, "SCTP assocination max retransmissions")
+  add_option(app,
+             "--sctp_assoc_max_retx",
+             config.sctp_assoc_max_retx,
+             "SCTP assocination max retransmissions (-1 to use system default)")
       ->capture_default_str();
   add_option(app,
              "--sctp_nodelay",
@@ -193,6 +208,14 @@ static void configure_cli11_report_args(CLI::App& app, cu_cp_unit_report_config&
   add_option(app, "--report_interval_ms", report_params.report_interval_ms, "Report interval in ms")
       ->check(
           CLI::IsMember({120, 240, 480, 640, 1024, 2048, 5120, 10240, 20480, 40960, 60000, 360000, 720000, 1800000}));
+  add_option(app,
+             "--periodic_ho_rsrp_offset_db",
+             report_params.periodic_ho_rsrp_offset,
+             "Measurement trigger quantity offset in dB used to trigger handovers by periodic measurement reports. "
+             "When set to -1 no handover will be triggered from periodical measurements. Note the "
+             "actual value is field value * 0.5 dB")
+      ->check(CLI::Range(-1, 30))
+      ->capture_default_str();
   add_option(app,
              "--meas_trigger_quantity",
              report_params.meas_trigger_quantity,
@@ -330,12 +353,10 @@ static void configure_cli11_rrc_args(CLI::App& app, cu_cp_unit_rrc_config& confi
              "Force RRC re-establishment fallback to RRC setup")
       ->capture_default_str();
 
-  add_option(
-      app,
-      "--rrc_procedure_timeout_ms",
-      config.rrc_procedure_timeout_ms,
-      "Timeout in ms used for RRC message exchange with UE. It needs to suit the expected communication delay and "
-      "account for potential retransmissions UE processing delays, SR delays, etc.")
+  add_option(app,
+             "--rrc_procedure_guard_time_ms",
+             config.rrc_procedure_guard_time_ms,
+             "Guard time in ms used for RRC message exchange with UE. This is added to the RRC procedure timeout.")
       ->capture_default_str();
 }
 
@@ -553,7 +574,9 @@ static void configure_cli11_qos_args(CLI::App& app, cu_cp_unit_qos_config& qos_p
 
 static void configure_cli11_metrics_layers_args(CLI::App& app, cu_cp_unit_metrics_layer_config& metrics_params)
 {
+  add_option(app, "--enable_ngap", metrics_params.enable_ngap, "Enable NGAP metrics")->capture_default_str();
   add_option(app, "--enable_pdcp", metrics_params.enable_pdcp, "Enable PDCP metrics")->capture_default_str();
+  add_option(app, "--enable_rrc", metrics_params.enable_rrc, "Enable CU-CP RRC metrics")->capture_default_str();
 }
 
 static void configure_cli11_metrics_args(CLI::App& app, cu_cp_unit_metrics_config& metrics_params)

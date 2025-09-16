@@ -94,7 +94,7 @@ static void parse_args(int argc, char** argv, bench_params& params)
       case 'h':
       default:
         usage(argv[0], params);
-        exit(0);
+        std::exit(0);
     }
   }
 }
@@ -148,7 +148,7 @@ void benchmark_tx_pdu(const bench_params& params)
 
   null_rlc_pcap pcap;
 
-  auto metrics_agg = std::make_unique<rlc_metrics_aggregator>(
+  auto metrics_coll = std::make_unique<rlc_bearer_metrics_collector>(
       gnb_du_id_t{}, du_ue_index_t{}, rb_id_t{}, timer_duration{1}, tester.get(), ue_worker);
 
   // Create RLC AM TX entity
@@ -159,7 +159,7 @@ void benchmark_tx_pdu(const bench_params& params)
                                                    *tester,
                                                    *tester,
                                                    *tester,
-                                                   *metrics_agg,
+                                                   *metrics_coll,
                                                    pcap,
                                                    pcell_worker,
                                                    ue_worker,
@@ -187,8 +187,9 @@ void benchmark_tx_pdu(const bench_params& params)
   std::chrono::nanoseconds bm_duration(bm_duration_ns);
   rlc_tx_metrics           tx_metrics = rlc_tx->get_metrics();
   fmt::print("\nRLC TX metrics:\n");
-  fmt::print(" - {}\n",
-             format_rlc_tx_metrics(std::chrono::duration_cast<std::chrono::milliseconds>(bm_duration), tx_metrics));
+  buffer.clear();
+  format_rlc_tx_metrics(buffer, std::chrono::duration_cast<std::chrono::milliseconds>(bm_duration), tx_metrics);
+  fmt::print(" - {}\n", to_c_str(buffer));
 }
 
 int main(int argc, char** argv)

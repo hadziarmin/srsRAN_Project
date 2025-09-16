@@ -93,12 +93,18 @@ protected:
   ether::vlan_frame_params                          vlan_params     = {{0, 0, 0, 0, 0, 1}, {0, 0, 0, 0, 0, 2}, 4, 8896};
   ru_compression_params                             dl_compr_params = {compression_type::none, 16};
   ru_compression_params                             ul_compr_params = {compression_type::BFP, 9};
-  ru_compression_params                             prach_compr_params = {compression_type::BFP, 8};
+  ru_compression_params                             prach_compr_params    = {compression_type::BFP, 8};
+  cplane_fft_size                                   c_plane_prach_fft_len = cplane_fft_size::fft_4096;
   std::shared_ptr<uplink_cplane_context_repository> ul_cplane_context_repo =
       std::make_shared<uplink_cplane_context_repository>(58);
   std::shared_ptr<uplink_cplane_context_repository> prach_cplane_context_repo =
       std::make_shared<uplink_cplane_context_repository>(58);
-  std::shared_ptr<ether::eth_frame_pool>    frame_pool = std::make_shared<ether::eth_frame_pool>(units::bytes(9000), 2);
+  std::shared_ptr<ether::eth_frame_pool> frame_pool =
+      std::make_shared<ether::eth_frame_pool>(srslog::fetch_basic_logger("TEST"),
+                                              units::bytes(9000),
+                                              2,
+                                              ofh::message_type::control_plane,
+                                              ofh::data_direction::downlink);
   ether::testing::vlan_frame_builder_spy*   vlan_builder;
   ecpri::testing::packet_builder_spy*       ecpri_builder;
   cplane_message_builder_spy*               cplane_builder;
@@ -115,10 +121,11 @@ private:
   {
     data_flow_cplane_scheduling_commands_impl_config config;
 
-    config.ru_nof_prbs        = ru_nof_prbs;
-    config.dl_compr_params    = dl_compr_params;
-    config.ul_compr_params    = ul_compr_params;
-    config.prach_compr_params = prach_compr_params;
+    config.ru_nof_prbs           = ru_nof_prbs;
+    config.dl_compr_params       = dl_compr_params;
+    config.ul_compr_params       = ul_compr_params;
+    config.prach_compr_params    = prach_compr_params;
+    config.c_plane_prach_fft_len = c_plane_prach_fft_len;
 
     return config;
   }

@@ -75,7 +75,7 @@ public:
   /// \param[in] ue_index Index of the UE.
   /// \param[in] sec_ctxt The received security context.
   /// \return True if the security context was successfully initialized, false otherwise.
-  virtual bool handle_handover_request(ue_index_t ue_index, security::security_context sec_ctxt) = 0;
+  virtual bool handle_handover_request(ue_index_t ue_index, const security::security_context& sec_ctxt) = 0;
 
   /// \brief Handle the reception of a new Initial Context Setup Request.
   /// \param[in] request The received Initial Context Setup Request.
@@ -161,9 +161,18 @@ class cu_cp_e1ap_event_handler : public cu_cp_task_scheduler_handler
 public:
   virtual ~cu_cp_e1ap_event_handler() = default;
 
+  /// \brief Handle the reception of an Bearer Context Release Request message.
+  /// \param[in] msg The received Bearer Context Release Request message.
+  virtual void handle_bearer_context_release_request(const cu_cp_bearer_context_release_request& msg) = 0;
+
   /// \brief Handle the reception of an Bearer Context Inactivity Notification message.
   /// \param[in] msg The received Bearer Context Inactivity Notification message.
   virtual void handle_bearer_context_inactivity_notification(const cu_cp_inactivity_notification& msg) = 0;
+
+  /// \brief Handles the reception of an E1 Release Request message.
+  /// \param[in] cu_up_index The index of the CU-UP processor.
+  /// \param[in] ue_list The indices of the UEs connected to the CU-UP.
+  virtual void handle_e1_release_request(cu_up_index_t cu_up_index, const std::vector<ue_index_t>& ue_list) = 0;
 };
 
 /// Interface used to handle DU specific procedures.
@@ -213,6 +222,11 @@ public:
   /// \param[in] ue_index The index of the old UE to remove.
   virtual void handle_rrc_reestablishment_complete(ue_index_t old_ue_index) = 0;
 
+  /// \brief Handle a notification of the reception of the RRC Reconfiguration Complete, and notify the DU with the F1AP
+  /// UE context modification procedure with the RRC Reconfiguration Complete Indicator IE present.
+  /// \param[in] ue_index The index of the UE that received the reconfiguration complete.
+  virtual void handle_rrc_reconf_complete_indicator(ue_index_t ue_index) = 0;
+
   /// \brief Transfer and remove UE contexts for an ongoing Reestablishment.
   /// \param[in] ue_index The new UE index of the UE that sent the Reestablishment Request.
   /// \param[in] old_ue_index The old UE index of the UE that sent the Reestablishment Request.
@@ -221,6 +235,15 @@ public:
   /// \brief Handle a UE release request.
   /// \param[in] request The release request.
   virtual async_task<void> handle_ue_context_release(const cu_cp_ue_context_release_request& request) = 0;
+};
+
+// Request with information for the target handler of the intra cu handover.
+struct cu_cp_intra_cu_handover_target_request {
+  ue_index_t                               target_ue_index = ue_index_t::invalid;
+  ue_index_t                               source_ue_index = ue_index_t::invalid;
+  uint8_t                                  transaction_id;
+  std::chrono::milliseconds                timeout;
+  e1ap_bearer_context_modification_request bearer_context_modification_request;
 };
 
 /// Interface for entities (e.g. DU processor) that wish to manipulate the context of a UE.
@@ -279,9 +302,9 @@ public:
   /// \param[in] nci The cell id of the serving cell to update.
   /// \param[in] current_meas_config The current meas config of the UE (if applicable).
   virtual std::optional<rrc_meas_cfg>
-  handle_measurement_config_request(ue_index_t                  ue_index,
-                                    nr_cell_identity            nci,
-                                    std::optional<rrc_meas_cfg> current_meas_config = std::nullopt) = 0;
+  handle_measurement_config_request(ue_index_t                         ue_index,
+                                    nr_cell_identity                   nci,
+                                    const std::optional<rrc_meas_cfg>& current_meas_config = std::nullopt) = 0;
 
   /// \brief Handle a measurement report for given UE.
   virtual void handle_measurement_report(const ue_index_t ue_index, const rrc_meas_results& meas_results) = 0;
@@ -327,6 +350,17 @@ public:
   virtual void handle_pending_ue_task_cancellation(ue_index_t ue_index) = 0;
 };
 
+/// Interface to handle AMF reconnections.
+class cu_cp_amf_reconnection_handler
+{
+public:
+  virtual ~cu_cp_amf_reconnection_handler() = default;
+
+  /// \brief Handle AMF reconnections.
+  /// \param[in] amf_index The index of the AMF that reconnected.
+  virtual void handle_amf_reconnection(amf_index_t amf_index) = 0;
+};
+
 class cu_cp_impl_interface : public cu_cp_e1ap_event_handler,
                              public cu_cp_du_event_handler,
                              public cu_cp_rrc_ue_interface,
@@ -336,7 +370,8 @@ class cu_cp_impl_interface : public cu_cp_e1ap_event_handler,
                              public cu_cp_nrppa_handler,
                              public cu_cp_ue_context_manipulation_handler,
                              public cu_cp_mobility_manager_handler,
-                             public cu_cp_ue_removal_handler
+                             public cu_cp_ue_removal_handler,
+                             public cu_cp_amf_reconnection_handler
 {
 public:
   virtual ~cu_cp_impl_interface() = default;
@@ -350,6 +385,7 @@ public:
   virtual cu_cp_measurement_config_handler&      get_cu_cp_measurement_config_handler() = 0;
   virtual cu_cp_mobility_manager_handler&        get_cu_cp_mobility_manager_handler()   = 0;
   virtual cu_cp_ue_removal_handler&              get_cu_cp_ue_removal_handler()         = 0;
+  virtual cu_cp_amf_reconnection_handler&        get_cu_cp_amf_reconnection_handler()   = 0;
 };
 
 } // namespace srs_cu_cp

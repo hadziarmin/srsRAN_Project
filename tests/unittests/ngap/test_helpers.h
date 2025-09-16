@@ -47,7 +47,7 @@ public:
   void attach_handler(ngap_message_handler* handler_) { handler = handler_; }
 
   std::unique_ptr<ngap_message_notifier>
-  handle_cu_cp_connection_request(std::unique_ptr<ngap_message_notifier> cu_cp_rx_pdu_notifier) override
+  handle_cu_cp_connection_request(std::unique_ptr<ngap_rx_message_notifier> cu_cp_rx_pdu_notifier) override
   {
     class dummy_ngap_message_notifier : public ngap_message_notifier
     {
@@ -55,21 +55,26 @@ public:
       dummy_ngap_message_notifier(dummy_n2_gateway& parent_) : parent(parent_) {}
       ~dummy_ngap_message_notifier() { parent.rx_pdu_notifier.reset(); }
 
-      void on_new_message(const ngap_message& msg) override
+      [[nodiscard]] bool on_new_message(const ngap_message& msg) override
       {
         parent.logger.info("Received message");
 
         // Verify correct packing of outbound PDU.
         byte_buffer   pack_buffer;
         asn1::bit_ref bref(pack_buffer);
-        ASSERT_EQ(msg.pdu.pack(bref), asn1::SRSASN_SUCCESS);
+        if (msg.pdu.pack(bref) != asn1::SRSASN_SUCCESS) {
+          parent.logger.error("Failed to pack message");
+          return false;
+        }
 
         parent.last_ngap_msgs.push_back(msg);
 
-        if (parent.handler != nullptr) {
-          parent.logger.info("Forwarding PDU");
-          parent.handler->handle_message(msg);
+        if (parent.handler == nullptr) {
+          return false;
         }
+        parent.logger.info("Forwarding PDU");
+        parent.handler->handle_message(msg);
+        return true;
       }
 
     private:
@@ -87,7 +92,7 @@ private:
   srslog::basic_logger& logger;
   ngap_message_handler* handler = nullptr;
 
-  std::unique_ptr<ngap_message_notifier> rx_pdu_notifier;
+  std::unique_ptr<ngap_rx_message_notifier> rx_pdu_notifier;
 };
 
 /// Dummy handler storing and printing the received PDU.
@@ -95,10 +100,11 @@ class dummy_ngap_message_notifier : public ngap_message_notifier
 {
 public:
   dummy_ngap_message_notifier() : logger(srslog::fetch_basic_logger("TEST")) {}
-  void on_new_message(const ngap_message& msg) override
+  [[nodiscard]] bool on_new_message(const ngap_message& msg) override
   {
     last_msg = msg;
     logger.info("Transmitted a PDU of type {}", msg.pdu.type().to_string());
+    return true;
   }
   ngap_message last_msg;
 
@@ -178,7 +184,7 @@ public:
     return ue_mng.find_ue_task_scheduler(ue_index)->schedule_async_task(std::move(task));
   }
 
-  bool on_handover_request_received(ue_index_t ue_index, security::security_context sec_ctxt) override
+  bool on_handover_request_received(ue_index_t ue_index, const security::security_context& sec_ctxt) override
   {
     srsran_assert(ue_mng.find_ue(ue_index) != nullptr, "UE must be present");
     logger.info("Received a handover request");
@@ -451,7 +457,7 @@ public:
   /// \brief Notify the CU-CP about a security context
   /// \param[in] sec_ctxt The received security context
   /// \return True if the security context was successfully initialized, false otherwise
-  bool init_security_context(security::security_context sec_ctxt) override { return true; }
+  bool init_security_context(const security::security_context& sec_ctxt) override { return true; }
 
   /// \brief Check if security is enabled
   [[nodiscard]] bool is_security_enabled() const override { return true; }

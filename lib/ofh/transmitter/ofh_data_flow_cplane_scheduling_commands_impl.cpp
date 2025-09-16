@@ -21,7 +21,6 @@
  */
 
 #include "ofh_data_flow_cplane_scheduling_commands_impl.h"
-#include "scoped_frame_buffer.h"
 #include "srsran/ran/resource_block.h"
 
 using namespace srsran;
@@ -93,7 +92,8 @@ static cplane_scs cplane_convert_scs(prach_subcarrier_spacing scs)
 static cplane_section_type3_parameters
 generate_prach_control_parameters(const data_flow_cplane_scheduling_prach_context& context,
                                   const ru_compression_params&                     comp,
-                                  unsigned                                         ru_nof_prb)
+                                  unsigned                                         ru_nof_prb,
+                                  cplane_fft_size                                  c_plane_prach_fft_len)
 {
   cplane_section_type3_parameters msg_params;
 
@@ -101,8 +101,7 @@ generate_prach_control_parameters(const data_flow_cplane_scheduling_prach_contex
   msg_params.scs          = cplane_convert_scs(context.prach_scs);
   msg_params.time_offset  = context.time_offset;
   msg_params.cpLength     = 0;
-  // TODO: see if this parameter needs to be derived from the PRACH context.
-  msg_params.fft_size = cplane_fft_size::fft_4096;
+  msg_params.fft_size     = c_plane_prach_fft_len;
 
   // Initialize radio application header.
   init_radio_app_header_parameters(
@@ -146,6 +145,7 @@ data_flow_cplane_scheduling_commands_impl::data_flow_cplane_scheduling_commands_
   nof_symbols_per_slot(get_nsymb_per_slot(config.cp)),
   ru_nof_prbs(config.ru_nof_prbs),
   sector_id(config.sector),
+  c_plane_prach_fft_len(config.c_plane_prach_fft_len),
   dl_compr_params(config.dl_compr_params),
   ul_compr_params(config.ul_compr_params),
   prach_compr_params(config.prach_compr_params),
@@ -180,8 +180,8 @@ void data_flow_cplane_scheduling_commands_impl::enqueue_section_type_1_message(
   }
 
   // Get an ethernet frame buffer.
-  scoped_frame_buffer scoped_buffer(*frame_pool, symbol_point, message_type::control_plane, direction);
-  if (SRSRAN_UNLIKELY(scoped_buffer.empty())) {
+  auto scoped_buffer = frame_pool->reserve(symbol_point);
+  if (SRSRAN_UNLIKELY(!scoped_buffer)) {
     logger.warning("Sector#{}: not enough space in the buffer pool to create a {} type 1 Control-Plane message for "
                    "slot '{}' and eAxC '{}'",
                    sector_id,
@@ -190,8 +190,7 @@ void data_flow_cplane_scheduling_commands_impl::enqueue_section_type_1_message(
                    context.eaxc);
     return;
   }
-  ether::frame_buffer& frame_buffer = scoped_buffer.get_next_frame();
-  span<uint8_t>        buffer       = frame_buffer.data();
+  span<uint8_t> buffer = scoped_buffer->get_buffer();
 
   // Build the Open Fronthaul control message. Only one port supported.
   units::bytes                    ether_hdr_size = eth_builder->get_header_size();
@@ -228,7 +227,7 @@ void data_flow_cplane_scheduling_commands_impl::enqueue_section_type_1_message(
   span<uint8_t> eth_buffer = span<uint8_t>(buffer).first(ether_hdr_size.value() + bytes_written);
   eth_builder->build_frame(eth_buffer);
 
-  frame_buffer.set_size(eth_buffer.size());
+  scoped_buffer->set_size(eth_buffer.size());
 }
 
 void data_flow_cplane_scheduling_commands_impl::enqueue_section_type_3_prach_message(
@@ -244,8 +243,8 @@ void data_flow_cplane_scheduling_commands_impl::enqueue_section_type_3_prach_mes
   }
 
   // Get an ethernet frame buffer.
-  scoped_frame_buffer scoped_buffer(*frame_pool, symbol_point, message_type::control_plane, data_direction::uplink);
-  if (SRSRAN_UNLIKELY(scoped_buffer.empty())) {
+  auto scoped_buffer = frame_pool->reserve(symbol_point);
+  if (SRSRAN_UNLIKELY(!scoped_buffer)) {
     logger.warning("Sector#{}: not enough space in the buffer pool to create a type 3 PRACH Control-Plane message for "
                    "slot '{}' and eAxC '{}'",
                    sector_id,
@@ -253,8 +252,7 @@ void data_flow_cplane_scheduling_commands_impl::enqueue_section_type_3_prach_mes
                    context.eaxc);
     return;
   }
-  ether::frame_buffer& frame_buffer = scoped_buffer.get_next_frame();
-  span<uint8_t>        buffer       = frame_buffer.data();
+  span<uint8_t> buffer = scoped_buffer->get_buffer();
 
   // Build the Open Fronthaul control message. Only one port supported.
   units::bytes                    ether_hdr_size = eth_builder->get_header_size();
@@ -262,7 +260,7 @@ void data_flow_cplane_scheduling_commands_impl::enqueue_section_type_3_prach_mes
   units::bytes                    offset         = ether_hdr_size + ecpri_hdr_size;
   span<uint8_t>                   ofh_buffer     = buffer.last(buffer.size() - offset.value());
   cplane_section_type3_parameters ofh_ctrl_params =
-      generate_prach_control_parameters(context, prach_compr_params, ru_nof_prbs);
+      generate_prach_control_parameters(context, prach_compr_params, ru_nof_prbs, c_plane_prach_fft_len);
 
   if (SRSRAN_UNLIKELY(logger.debug.enabled())) {
     logger.debug(
@@ -304,7 +302,7 @@ void data_flow_cplane_scheduling_commands_impl::enqueue_section_type_3_prach_mes
   span<uint8_t> eth_buffer = span<uint8_t>(buffer).first(ether_hdr_size.value() + bytes_written);
   eth_builder->build_frame(eth_buffer);
 
-  frame_buffer.set_size(eth_buffer.size());
+  scoped_buffer->set_size(eth_buffer.size());
 }
 
 data_flow_message_encoding_metrics_collector* data_flow_cplane_scheduling_commands_impl::get_metrics_collector()

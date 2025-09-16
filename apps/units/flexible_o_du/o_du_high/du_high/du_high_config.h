@@ -101,6 +101,10 @@ struct du_high_unit_drx_config {
   unsigned on_duration_timer = 10;
   /// drx-InactivityTimer in milliseconds, as per TS 38.331.
   unsigned inactivity_timer = 0;
+  /// drx-RetransmissionTimerDL in slots, as per TS 38.331.
+  unsigned retx_timer_dl = 0;
+  /// drx-RetransmissionTimerUL in slots, as per TS 38.331.
+  unsigned retx_timer_ul = 0;
   /// drx-LongCycle in milliseconds, as per TS 38.331. The value 0 is used for disabling DRX.
   unsigned long_cycle = 0;
 };
@@ -124,6 +128,8 @@ struct du_high_unit_ul_common_config {
   unsigned max_pucchs_per_slot = 31U;
   /// Maximum number of PUSCH + PUCCH grants per slot.
   unsigned max_ul_grants_per_slot = 32U;
+  /// Minimum distance in PRBs between PUCCH and UE-dedicated PUSCH grants.
+  unsigned min_pucch_pusch_prb_distance = 1U;
 };
 
 /// PDSCH application configuration.
@@ -142,6 +148,9 @@ struct du_high_unit_pdsch_config {
   unsigned nof_harqs = 16;
   /// Maximum number of times a DL HARQ process can be retransmitted, before it gets discarded.
   unsigned max_nof_harq_retxs = 4;
+  /// \brief Maximum time, in milliseconds, between a HARQ NACK and the scheduler allocating the respective HARQ for
+  /// retransmission. If this timeout is exceeded, the HARQ process is discarded.
+  unsigned harq_retx_timeout = 100;
   /// Maximum number of consecutive DL KOs before an RLF is reported.
   unsigned max_consecutive_kos = 100;
   /// Redundancy version sequence to use. Each element can have one of the following values: {0, 1, 2, 3}.
@@ -188,6 +197,15 @@ struct du_high_unit_pdsch_config {
   uint8_t harq_la_ri_drop_threshold{1};
   /// Position for additional DM-RS in DL, see Tables 7.4.1.1.2-3 and 7.4.1.1.2-4 in TS 38.211.
   unsigned dmrs_add_pos{2};
+  /// \brief Bundle size used for interleaving.
+  ///
+  /// Controls the bundle size used for interleaving for PDSCH transmissions scheduled on dedicated search spaces. If
+  /// set to zero, interleaving will be disabled. All other PDSCH transmissions will be always non-interleaved.
+  vrb_to_prb::mapping_type interleaving_bundle_size{vrb_to_prb::mapping_type::non_interleaved};
+  /// Limits the maximum rank UEs can report. It must not exceed the number of transmit antennas.
+  std::optional<unsigned> max_rank;
+  /// Enable multiplexing of CSI-RS and PDSCH.
+  bool enable_csi_rs_pdsch_multiplexing = true;
 };
 
 /// PUSCH application configuration.
@@ -200,6 +218,9 @@ struct du_high_unit_pusch_config {
   unsigned max_ue_mcs = 28;
   /// Maximum number of times a UL HARQ process can be retransmitted, before it gets discarded.
   unsigned max_nof_harq_retxs = 4;
+  /// \brief Maximum time, in milliseconds, between a CRC=KO and the scheduler allocating the respective HARQ for
+  /// retransmission. If this timeout is exceeded, the HARQ process is discarded.
+  unsigned harq_retx_timeout = 100;
   /// Maximum number of consecutive UL KOs before an RLF is reported.
   unsigned max_consecutive_kos = 100;
   /// Redundancy version sequence to use. Each element can have one of the following values: {0, 1, 2, 3}.
@@ -378,7 +399,7 @@ struct du_high_unit_pucch_config {
   /// @{
   /// Max number of PRBs for PUCCH Format 2. Values {1,...,16}.
   unsigned f2_max_nof_rbs = 1;
-  /// \brief Maximum payload in bits that can be carried by PUCCH Format 2. Values {1,...,11}.
+  /// \brief Min required payload capacity in bits that can be carried by PUCCH Format 2. Values {4,...,40}.
   /// If this is set, \ref f2_max_nof_rbs is ignored.
   std::optional<unsigned> f2_max_payload_bits;
   /// Max code rate for PUCCH Format 2.
@@ -393,7 +414,7 @@ struct du_high_unit_pucch_config {
   /// @{
   /// Max number of PRBs for PUCCH Format 3. Values {1,...,16}.
   unsigned f3_max_nof_rbs = 1;
-  /// \brief Maximum payload in bits that can be carried by PUCCH Format 3. Values {1,...,11}.
+  /// \brief Min required payload capacity in bits that can be carried by PUCCH Format 3. Values {4,...,40}.
   /// If this is set, \ref f2_max_nof_rbs is ignored.
   std::optional<unsigned> f3_max_payload_bits;
   /// Max code rate for PUCCH Format 3.
@@ -569,7 +590,7 @@ struct du_high_unit_sib_config {
     /// Periodicity of the SI-message in radio frames. Values: {8, 16, 32, 64, 128, 256, 512}.
     unsigned si_period_rf = 32;
     /// SI window position of the associated SI-message. See TS 38.331, \c SchedulingInfo2-r17. Values: {1,...,256}.
-    /// \remark This field is only applicable for release 17 \c SI-SchedulingInfo.
+    /// \remark This field is only applicable for release 17 \c SI-SchedulingInfo2.
     std::optional<unsigned> si_window_position;
   };
 
@@ -819,6 +840,8 @@ struct du_high_unit_base_cell_config {
   unsigned nof_antennas_ul = 1;
   /// Human readable full PLMN (without possible filler digit).
   std::string plmn = "00101";
+  /// List of human readable PLMNs (without possible filler digit) that are additionally supported by the cell.
+  std::vector<std::string> additional_plmns;
   /// TAC.
   tac_t tac = 7;
   /// Whether the DU adds this cell to the list of served cells while communicating with the CU-CP or it waits for a
@@ -862,6 +885,8 @@ struct du_high_unit_base_cell_config {
   du_high_unit_drx_config drx_cfg;
   /// Network slice configuration.
   std::vector<du_high_unit_cell_slice_config> slice_cfg;
+  /// NTN configuration.
+  std::optional<ntn_config> ntn_cfg;
 };
 
 struct du_high_unit_test_mode_ue_config {
@@ -957,20 +982,13 @@ struct du_high_unit_execution_queues_config {
   uint32_t ue_data_executor_queue_size = 8192;
 };
 
-/// CPU affinities configuration for the cell.
-struct du_high_unit_cpu_affinities_cell_config {
-  os_sched_affinity_config l2_cell_cpu_cfg = {sched_affinity_mask_types::l2_cell, {}, sched_affinity_mask_policy::mask};
-};
-
 /// Expert configuration of the DU high.
 struct du_high_unit_expert_execution_config {
   /// \brief Task executor configuration for the DU.
   du_high_unit_execution_queues_config du_queue_cfg;
 
-  /// \brief CPU affinities per cell of the gNB app.
-  ///
-  /// \note Add one cell by default.
-  std::vector<du_high_unit_cpu_affinities_cell_config> cell_affinities = {{}};
+  /// \brief Whether to enable tracing of the DU-high executors.
+  bool executor_tracing_enable = false;
 };
 
 /// RLC UM TX configuration
@@ -1010,7 +1028,9 @@ struct du_high_unit_srb_config {
 
 /// F1-U configuration at DU side
 struct du_high_unit_f1u_du_config {
-  int32_t t_notify; ///< Maximum backoff time for transmit/delivery notifications from DU to CU_UP (ms)
+  int32_t  t_notify;          ///< Maximum backoff time for transmit/delivery notifications from DU to CU_UP (ms)
+  uint32_t ul_buffer_timeout; ///< Timeout for UL buffering that waits for the handover to fully finish.
+  uint32_t ul_buffer_size;    ///< UL buffer size to be used during handover.
 };
 
 /// RLC UM TX configuration
@@ -1061,8 +1081,6 @@ struct du_high_unit_config {
   du_high_unit_logger_config loggers;
   /// Configuration for testing purposes.
   du_high_unit_test_mode_config test_mode_cfg = {};
-  /// NTN configuration.
-  std::optional<ntn_config> ntn_cfg;
   /// \brief Cell configuration.
   ///
   /// \note Add one cell by default.

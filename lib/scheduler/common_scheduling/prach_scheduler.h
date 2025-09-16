@@ -38,6 +38,8 @@ public:
   /// Allocate RACH PDUs for the given slot.
   void run_slot(cell_resource_allocator& res_grid);
 
+  void stop();
+
 private:
   // [Implementation-defined] This is the maximum number of slots per PRACH preamble. It's obtained by considering the
   // longest preamble length (which can be derived from Table 6.3.3.1-1, TS 38.211 for Format 2) and the shortest slot
@@ -73,8 +75,8 @@ private:
   /// PRACH Configuration parameters derived from the cell configuration.
   prach_configuration prach_cfg;
 
-  /// Bitset that defines whether PRACH is enabled for a given subframe.
-  std::bitset<NOF_SUBFRAMES_PER_FRAME> prach_subframe_occasion_bitmap;
+  /// Bitset that defines whether PRACH is enabled for a given slot.
+  std::bitset<prach_configuration::max_nof_slots_60kHz_frame> prach_slot_occasion_bitmap;
 
   /// Pre-generated PRACH occasions.
   static_vector<cached_prach_occasion, MAX_PRACH_OCCASIONS_PER_SLOT> cached_prachs;

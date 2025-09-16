@@ -34,7 +34,7 @@ using namespace srsran;
 prach_scheduler::prach_scheduler(const cell_configuration& cfg_) :
   cell_cfg(cfg_),
   logger(srslog::fetch_basic_logger("SCHED")),
-  prach_cfg(prach_configuration_get(frequency_range::FR1,
+  prach_cfg(prach_configuration_get(to_frequency_range(cell_cfg.ssb_case),
                                     cell_cfg.paired_spectrum ? duplex_mode::FDD : duplex_mode::TDD,
                                     rach_cfg_common().rach_cfg_generic.prach_config_index))
 {
@@ -43,7 +43,7 @@ prach_scheduler::prach_scheduler(const cell_configuration& cfg_) :
 
   // Convert list of PRACH subframe occasions to bitmap.
   for (const unsigned pos : prach_cfg.slots) {
-    prach_subframe_occasion_bitmap.set(pos, true);
+    prach_slot_occasion_bitmap.set(pos, true);
   }
 
   prach_symbols_slots_duration prach_duration_info =
@@ -144,6 +144,11 @@ void prach_scheduler::run_slot(cell_resource_allocator& res_grid)
   allocate_slot_prach_pdus(res_grid, res_grid[res_grid.max_ul_slot_alloc_delay - prach_length_slots].slot);
 }
 
+void prach_scheduler::stop()
+{
+  first_slot_ind = true;
+}
+
 void prach_scheduler::allocate_slot_prach_pdus(cell_resource_allocator& res_grid, slot_point sl)
 {
   // If any of the slots over which the PRACH preamble should be allocated isn't an UL slot, return.
@@ -163,7 +168,7 @@ void prach_scheduler::allocate_slot_prach_pdus(cell_resource_allocator& res_grid
     // PRACH does not start in this slot.
     return;
   }
-  if (not prach_subframe_occasion_bitmap.test(sl.subframe_index())) {
+  if (not prach_slot_occasion_bitmap.test(sl.subframe_index())) {
     // PRACH is not enabled in this subframe.
     return;
   }

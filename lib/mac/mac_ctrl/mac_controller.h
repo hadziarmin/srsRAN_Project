@@ -40,7 +40,7 @@ struct mac_ue_context {
 
 class rnti_manager;
 
-class mac_controller : public mac_ctrl_configurator, public mac_ue_configurator, public mac_cell_manager
+class mac_controller final : public mac_ctrl_configurator, public mac_ue_configurator, public mac_cell_manager
 {
 public:
   mac_controller(const mac_control_config&   cfg_,
@@ -97,6 +97,7 @@ private:
   mac_dl_configurator&        dl_unit;
   rnti_manager&               rnti_table;
   mac_scheduler_configurator& sched_cfg;
+  mac_clock_controller&       time_ctrl;
 
   // Metrics aggregator.
   mac_metrics_aggregator metrics;

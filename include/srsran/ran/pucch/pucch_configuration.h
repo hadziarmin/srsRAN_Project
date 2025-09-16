@@ -31,7 +31,6 @@
 #include "srsran/ran/sr_configuration.h"
 #include <cstdint>
 #include <variant>
-#include <vector>
 
 namespace srsran {
 
@@ -112,28 +111,19 @@ struct pucch_common_all_formats {
 /// Configuration for \c PUCCH-format0, in \c PUCCH-Config, TS 38.331.
 struct pucch_format_0_cfg {
   uint8_t initial_cyclic_shift;
-  uint8_t nof_symbols;
-  uint8_t starting_sym_idx;
 
-  bool operator==(const pucch_format_0_cfg& rhs) const
-  {
-    return initial_cyclic_shift == rhs.initial_cyclic_shift && nof_symbols == rhs.nof_symbols &&
-           starting_sym_idx == rhs.starting_sym_idx;
-  }
+  bool operator==(const pucch_format_0_cfg& rhs) const { return initial_cyclic_shift == rhs.initial_cyclic_shift; }
   bool operator!=(const pucch_format_0_cfg& rhs) const { return !(rhs == *this); }
 };
 
 /// Configuration for \c PUCCH-format1, in \c PUCCH-Config, TS 38.331.
 struct pucch_format_1_cfg {
   uint8_t initial_cyclic_shift;
-  uint8_t nof_symbols;
-  uint8_t starting_sym_idx;
   uint8_t time_domain_occ;
 
   bool operator==(const pucch_format_1_cfg& rhs) const
   {
-    return initial_cyclic_shift == rhs.initial_cyclic_shift && nof_symbols == rhs.nof_symbols &&
-           starting_sym_idx == rhs.starting_sym_idx && time_domain_occ == rhs.time_domain_occ;
+    return initial_cyclic_shift == rhs.initial_cyclic_shift && time_domain_occ == rhs.time_domain_occ;
   }
   bool operator!=(const pucch_format_1_cfg& rhs) const { return !(rhs == *this); }
 };
@@ -141,27 +131,19 @@ struct pucch_format_1_cfg {
 /// Configuration for \c PUCCH-format2 or \c PUCCH-format3, in \c PUCCH-Config, TS 38.331.
 struct pucch_format_2_3_cfg {
   uint8_t nof_prbs;
-  uint8_t nof_symbols;
-  uint8_t starting_sym_idx;
 
-  bool operator==(const pucch_format_2_3_cfg& rhs) const
-  {
-    return nof_prbs == rhs.nof_prbs && nof_symbols == rhs.nof_symbols && starting_sym_idx == rhs.starting_sym_idx;
-  }
+  bool operator==(const pucch_format_2_3_cfg& rhs) const { return nof_prbs == rhs.nof_prbs; }
   bool operator!=(const pucch_format_2_3_cfg& rhs) const { return !(rhs == *this); }
 };
 
 /// Configuration for \c PUCCH-format4, in \c PUCCH-Config, TS 38.331.
 struct pucch_format_4_cfg {
-  uint8_t          nof_symbols;
   pucch_f4_occ_len occ_length;
   pucch_f4_occ_idx occ_index;
-  uint8_t          starting_sym_idx;
 
   bool operator==(const pucch_format_4_cfg& rhs) const
   {
-    return nof_symbols == rhs.nof_symbols && occ_length == rhs.occ_length && occ_index == rhs.occ_index &&
-           starting_sym_idx == rhs.starting_sym_idx;
+    return occ_length == rhs.occ_length && occ_index == rhs.occ_index;
   }
   bool operator!=(const pucch_format_4_cfg& rhs) const { return !(rhs == *this); }
 };
@@ -171,13 +153,16 @@ struct pucch_resource {
   pucch_res_id_t                                                                                 res_id = {0, 0};
   unsigned                                                                                       starting_prb;
   std::optional<unsigned>                                                                        second_hop_prb;
+  uint8_t                                                                                        nof_symbols;
+  uint8_t                                                                                        starting_sym_idx;
   pucch_format                                                                                   format;
   std::variant<pucch_format_0_cfg, pucch_format_1_cfg, pucch_format_2_3_cfg, pucch_format_4_cfg> format_params;
 
   bool operator==(const pucch_resource& rhs) const
   {
     return res_id == rhs.res_id && starting_prb == rhs.starting_prb && second_hop_prb == rhs.second_hop_prb &&
-           format == rhs.format && format_params == rhs.format_params;
+           nof_symbols == rhs.nof_symbols && starting_sym_idx == rhs.starting_sym_idx && format == rhs.format &&
+           format_params == rhs.format_params;
   }
   bool operator!=(const pucch_resource& rhs) const { return !(rhs == *this); }
 };
@@ -273,11 +258,18 @@ struct pucch_config {
   /// \remark For Format 0 and 1, only the max number of HARQ-ACK bits are considered.
   static_vector<unsigned, 5> format_max_payload{0, 0, 0, 0, 0};
 
+  /// Helper variable to avoid iterating over several lists to retrieve the PUCCH format.
+  pucch_format set_1_format = pucch_format::NOF_FORMATS;
+
   std::optional<pucch_power_control> pucch_pw_control;
 
   /// Returns the PUCCH resource max UCI payload for the given format.
   /// \remark For Format 0 and 1, it returns only the max number of HARQ-ACK bits.
   unsigned get_max_payload(pucch_format format) const { return format_max_payload[pucch_format_to_uint(format)]; }
+
+  /// Returns the PUCCH format of the resources from PUCCH resource set 1.
+  /// \remark The PUCCH resource set 1 can only contain PUCCH format 2, 3 or 4.
+  pucch_format get_set_1_format() const { return set_1_format; }
 
   bool operator==(const pucch_config& rhs) const
   {

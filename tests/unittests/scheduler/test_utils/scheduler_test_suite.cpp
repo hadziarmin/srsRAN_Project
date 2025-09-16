@@ -103,8 +103,8 @@ void srsran::assert_pdcch_pdsch_common_consistency(const cell_configuration&   c
   }
   const crb_interval cs_zero_crbs = get_coreset0_crbs(cell_cfg.dl_cfg_common.init_dl_bwp.pdcch_common);
 
-  uint8_t  time_assignment = 0;
-  uint8_t  freq_assignment = 0;
+  unsigned time_assignment = 0;
+  unsigned freq_assignment = 0;
   unsigned N_rb_dl_bwp     = 0;
   switch (pdcch.dci.type) {
     case dci_dl_rnti_config_type::si_f1_0: {
@@ -146,7 +146,7 @@ void srsran::assert_pdcch_pdsch_common_consistency(const cell_configuration&   c
       cell_cfg.dl_cfg_common.init_dl_bwp.pdsch_common.pdsch_td_alloc_list[time_assignment].symbols;
   TESTASSERT(symbols == pdsch.symbols, "Mismatch of time-domain resource assignment and PDSCH symbols");
 
-  uint8_t pdsch_freq_resource = ra_frequency_type1_get_riv(
+  unsigned pdsch_freq_resource = ra_frequency_type1_get_riv(
       ra_frequency_type1_configuration{N_rb_dl_bwp, pdsch.rbs.type1().start(), pdsch.rbs.type1().length()});
   TESTASSERT_EQ(pdsch_freq_resource, freq_assignment, "DCI frequency resource does not match PDSCH PRBs");
 }
@@ -161,8 +161,12 @@ void srsran::assert_pdcch_pdsch_common_consistency(const cell_configuration&    
       case dci_dl_rnti_config_type::si_f1_0: {
         const auto&     sibs = cell_res_grid[0].result.dl.bc.sibs;
         sib_information sib;
-        auto            it = std::find_if(
-            sibs.begin(), sibs.end(), [&pdcch](const auto& sib_) { return sib_.pdsch_cfg.rnti == pdcch.ctx.rnti; });
+        const auto&     it = std::find_if(sibs.begin(), sibs.end(), [&pdcch](const auto& sib_) {
+          unsigned pdsch_freq_resource = ra_frequency_type1_get_riv(ra_frequency_type1_configuration{
+              pdcch.dci.si_f1_0.N_rb_dl_bwp, sib_.pdsch_cfg.rbs.type1().start(), sib_.pdsch_cfg.rbs.type1().length()});
+          return (sib_.pdsch_cfg.rnti == pdcch.ctx.rnti) &&
+                 (pdsch_freq_resource == pdcch.dci.si_f1_0.frequency_resource);
+        });
         TESTASSERT(it != sibs.end());
         linked_pdsch = &it->pdsch_cfg;
       } break;
@@ -290,9 +294,18 @@ void srsran::test_pdsch_ue_consistency(const cell_configuration& cell_cfg, span<
 
 void srsran::test_pusch_ue_consistency(const cell_configuration& cell_cfg, span<const ul_sched_info> grants)
 {
+  ASSERT_LE(grants.size(), cell_cfg.expert_cfg.ue.max_puschs_per_slot);
+
   for (const ul_sched_info& grant : grants) {
     ASSERT_TRUE(test_helper::is_valid_ul_sched_info(grant));
   }
+}
+
+void srsran::test_pucch_consistency(const cell_configuration& cell_cfg, span<const pucch_info> pucchs)
+{
+  ASSERT_LE(pucchs.size(), cell_cfg.expert_cfg.ue.max_pucchs_per_slot);
+
+  // TODO: Add more checks.
 }
 
 /// \brief Tests the validity of the parameters chosen for the PDCCHs using common search spaces. Checks include:
@@ -450,16 +463,41 @@ void srsran::test_prach_opportunity_validity(const cell_configuration& cell_cfg,
 
 void srsran::test_ul_resource_grid_collisions(const cell_configuration& cell_cfg, const ul_sched_result& result)
 {
-  cell_slot_resource_grid grid(cell_cfg.ul_cfg_common.freq_info_ul.scs_carrier_list);
-
+  cell_slot_resource_grid      grid(cell_cfg.ul_cfg_common.freq_info_ul.scs_carrier_list);
   std::vector<test_grant_info> ul_grants = get_ul_grants(cell_cfg, result);
   for (const test_grant_info& test_grant : ul_grants) {
-    if (test_grant.type != test_grant_info::PUCCH) {
+    // We do not check for collisions between PUCCHs or between PUCCHs and PRACHs.
+    if (test_grant.type != test_grant_info::UE_UL) {
+      grid.fill(test_grant.grant);
+    }
+  }
+  for (const test_grant_info& test_grant : ul_grants) {
+    if (test_grant.type == test_grant_info::UE_UL) {
       ASSERT_FALSE(grid.collides(test_grant.grant))
           << fmt::format("Resource collision for grant with rnti={}", test_grant.rnti);
+      grid.fill(test_grant.grant);
     }
-    grid.fill(test_grant.grant);
   }
+}
+
+void srsran::test_ul_consistency(const cell_configuration& cell_cfg, const ul_sched_result& result)
+{
+  // Check that UL grant limits are respected.
+  ASSERT_LE(result.pucchs.size() + result.puschs.size(), cell_cfg.expert_cfg.ue.max_ul_grants_per_slot);
+
+  ASSERT_NO_FATAL_FAILURE(test_prach_opportunity_validity(cell_cfg, result.prachs));
+  ASSERT_NO_FATAL_FAILURE(test_pusch_ue_consistency(cell_cfg, result.puschs));
+  ASSERT_NO_FATAL_FAILURE(test_pucch_consistency(cell_cfg, result.pucchs));
+  ASSERT_NO_FATAL_FAILURE(test_ul_resource_grid_collisions(cell_cfg, result));
+}
+
+void srsran::test_dl_consistency(const cell_configuration& cell_cfg, slot_point sl_tx, const dl_sched_result& result)
+{
+  ASSERT_NO_FATAL_FAILURE(test_pdsch_sib_consistency(cell_cfg, result.bc.sibs));
+  ASSERT_NO_FATAL_FAILURE(test_pdsch_rar_consistency(cell_cfg, result.rar_grants));
+  ASSERT_NO_FATAL_FAILURE(test_pdsch_ue_consistency(cell_cfg, result.ue_grants));
+  ASSERT_NO_FATAL_FAILURE(test_pdcch_common_consistency(cell_cfg, sl_tx, result.dl_pdcchs));
+  ASSERT_NO_FATAL_FAILURE(test_dl_resource_grid_collisions(cell_cfg, result));
 }
 
 void srsran::test_scheduler_result_consistency(const cell_configuration& cell_cfg,
@@ -468,14 +506,8 @@ void srsran::test_scheduler_result_consistency(const cell_configuration& cell_cf
 {
   ASSERT_TRUE(result.success);
   ASSERT_NO_FATAL_FAILURE(assert_tdd_pattern_consistency(cell_cfg, sl_tx, result));
-  ASSERT_NO_FATAL_FAILURE(test_pdsch_sib_consistency(cell_cfg, result.dl.bc.sibs));
-  ASSERT_NO_FATAL_FAILURE(test_prach_opportunity_validity(cell_cfg, result.ul.prachs));
-  ASSERT_NO_FATAL_FAILURE(test_pdsch_rar_consistency(cell_cfg, result.dl.rar_grants));
-  ASSERT_NO_FATAL_FAILURE(test_pdsch_ue_consistency(cell_cfg, result.dl.ue_grants));
-  ASSERT_NO_FATAL_FAILURE(test_pusch_ue_consistency(cell_cfg, result.ul.puschs));
-  ASSERT_NO_FATAL_FAILURE(test_pdcch_common_consistency(cell_cfg, sl_tx, result.dl.dl_pdcchs));
-  ASSERT_NO_FATAL_FAILURE(test_dl_resource_grid_collisions(cell_cfg, result.dl));
-  ASSERT_NO_FATAL_FAILURE(test_ul_resource_grid_collisions(cell_cfg, result.ul));
+  ASSERT_NO_FATAL_FAILURE(test_dl_consistency(cell_cfg, sl_tx, result.dl));
+  ASSERT_NO_FATAL_FAILURE(test_ul_consistency(cell_cfg, result.ul));
 }
 
 /// \brief Verifies that the cell resource grid PRBs and symbols was filled with the allocated PDSCHs.

@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include "../operation_controller_dummy.h"
 #include "../support/uplink_cplane_context_repository.h"
 #include "ofh_data_flow_cplane_scheduling_commands.h"
 #include "sequence_identifier_generator.h"
@@ -47,6 +48,8 @@ struct data_flow_cplane_scheduling_commands_impl_config {
   ru_compression_params ul_compr_params;
   /// PRACH compression parameters.
   ru_compression_params prach_compr_params;
+  /// PRACH FFT size (to be used in Type 3 messages).
+  cplane_fft_size c_plane_prach_fft_len;
 };
 
 /// Open Fronthaul Control-Plane scheduling and beamforming commands data flow implementation dependencies.
@@ -75,6 +78,9 @@ public:
                                             data_flow_cplane_scheduling_commands_impl_dependencies&& dependencies);
 
   // See interface for documentation.
+  operation_controller& get_operation_controller() override { return controller; }
+
+  // See interface for documentation.
   void enqueue_section_type_1_message(const data_flow_cplane_type_1_context& context) override;
 
   // See interface for documentation.
@@ -88,9 +94,11 @@ private:
   const unsigned                                    nof_symbols_per_slot;
   const unsigned                                    ru_nof_prbs;
   const unsigned                                    sector_id;
+  const cplane_fft_size                             c_plane_prach_fft_len;
   const ru_compression_params                       dl_compr_params;
   const ru_compression_params                       ul_compr_params;
   const ru_compression_params                       prach_compr_params;
+  operation_controller_dummy                        controller;
   sequence_identifier_generator                     cp_dl_seq_gen;
   sequence_identifier_generator                     cp_ul_seq_gen;
   std::shared_ptr<uplink_cplane_context_repository> ul_cplane_context_repo;

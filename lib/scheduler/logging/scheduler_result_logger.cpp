@@ -29,9 +29,7 @@
 
 using namespace srsran;
 
-namespace {
-
-auto make_dl_dci_log_entry(const dci_dl_info& dci)
+static auto make_dl_dci_log_entry(const dci_dl_info& dci)
 {
   bool                   is_formattable = true;
   uint8_t                h_id           = 0;
@@ -41,6 +39,7 @@ auto make_dl_dci_log_entry(const dci_dl_info& dci)
   uint8_t                pucch_res_id   = 0;
   std::optional<int8_t>  tpc_cmd;
   std::optional<uint8_t> dai;
+  std::optional<bool>    vrb_prb;
 
   switch (dci.type) {
     case dci_dl_rnti_config_type::c_rnti_f1_0: {
@@ -68,6 +67,7 @@ auto make_dl_dci_log_entry(const dci_dl_info& dci)
       mcs                = dci1_1.tb1_modulation_coding_scheme;
       pucch_res_id       = dci1_1.pucch_resource_indicator;
       tpc_cmd            = dci1_1.tpc_command;
+      vrb_prb            = dci1_1.vrb_prb_mapping;
       if (dci.c_rnti_f1_1.downlink_assignment_index.has_value()) {
         dai = dci.c_rnti_f1_1.downlink_assignment_index;
       }
@@ -76,7 +76,7 @@ auto make_dl_dci_log_entry(const dci_dl_info& dci)
       is_formattable = false;
       break;
   }
-  return make_formattable([is_formattable, h_id, ndi, rv, mcs, pucch_res_id, dai, tpc_cmd](auto& ctx) {
+  return make_formattable([is_formattable, h_id, ndi, rv, mcs, pucch_res_id, dai, tpc_cmd, vrb_prb](auto& ctx) {
     if (is_formattable) {
       fmt::format_to(ctx.out(), "dci: h_id={} ndi={} rv={} mcs={} res_ind={}", h_id, ndi, rv, mcs, pucch_res_id);
       if (tpc_cmd.has_value()) {
@@ -85,12 +85,15 @@ auto make_dl_dci_log_entry(const dci_dl_info& dci)
       if (dai.has_value()) {
         fmt::format_to(ctx.out(), " dai={}", dai.value());
       }
+      if (vrb_prb.has_value()) {
+        fmt::format_to(ctx.out(), " vrb_prb_map_used={}", vrb_prb.value() ? "yes" : "no");
+      }
     }
     return ctx.out();
   });
 }
 
-auto make_ul_dci_log_entry(const dci_ul_info& dci)
+static auto make_ul_dci_log_entry(const dci_ul_info& dci)
 {
   uint8_t                h_id    = 0;
   bool                   ndi     = false;
@@ -142,7 +145,7 @@ auto make_ul_dci_log_entry(const dci_ul_info& dci)
   });
 }
 
-auto make_dl_pdcch_log_entry(const pdcch_dl_information& pdcch)
+static auto make_dl_pdcch_log_entry(const pdcch_dl_information& pdcch)
 {
   return make_formattable([rnti     = pdcch.ctx.rnti,
                            dci_type = pdcch.dci.type,
@@ -164,7 +167,7 @@ auto make_dl_pdcch_log_entry(const pdcch_dl_information& pdcch)
   });
 }
 
-auto make_dl_pdcch_log_list(const pdcch_dl_info_list& pdcchs, bool log_broadcast)
+static auto make_dl_pdcch_log_list(const pdcch_dl_info_list& pdcchs, bool log_broadcast)
 {
   using pdcch_entry_type = decltype(make_dl_pdcch_log_entry(std::declval<pdcch_dl_information>()));
   static_vector<pdcch_entry_type, MAX_DL_PDCCH_PDUS_PER_SLOT> list;
@@ -177,7 +180,7 @@ auto make_dl_pdcch_log_list(const pdcch_dl_info_list& pdcchs, bool log_broadcast
   return list;
 }
 
-auto make_ul_pdcch_log_entry(const pdcch_ul_information& pdcch)
+static auto make_ul_pdcch_log_entry(const pdcch_ul_information& pdcch)
 {
   return make_formattable([rnti     = pdcch.ctx.rnti,
                            dci_type = pdcch.dci.type,
@@ -199,7 +202,7 @@ auto make_ul_pdcch_log_entry(const pdcch_ul_information& pdcch)
   });
 }
 
-auto make_sib_info_log_entry(const sib_information& sib_info)
+static auto make_sib_info_log_entry(const sib_information& sib_info)
 {
   return make_formattable([si_ind = sib_info.si_indicator,
                            rbs    = sib_info.pdsch_cfg.rbs,
@@ -208,7 +211,7 @@ auto make_sib_info_log_entry(const sib_information& sib_info)
   });
 }
 
-auto make_sib_info_log_list(const static_vector<sib_information, MAX_SI_PDUS_PER_SLOT>& sibs, bool log_broadcast)
+static auto make_sib_info_log_list(const static_vector<sib_information, MAX_SI_PDUS_PER_SLOT>& sibs, bool log_broadcast)
 {
   using sib_entry_type = decltype(make_sib_info_log_entry(std::declval<sib_information>()));
 
@@ -222,7 +225,7 @@ auto make_sib_info_log_list(const static_vector<sib_information, MAX_SI_PDUS_PER
   return list;
 }
 
-auto make_rar_info_log_entry(const rar_information& rar_info)
+static auto make_rar_info_log_entry(const rar_information& rar_info)
 {
   return make_formattable([rnti = rar_info.pdsch_cfg.rnti,
                            rb   = rar_info.pdsch_cfg.rbs,
@@ -231,7 +234,7 @@ auto make_rar_info_log_entry(const rar_information& rar_info)
   });
 }
 
-auto make_rar_info_log_list(const static_vector<rar_information, MAX_RAR_PDUS_PER_SLOT>& rars)
+static auto make_rar_info_log_list(const static_vector<rar_information, MAX_RAR_PDUS_PER_SLOT>& rars)
 {
   using rar_entry_type = decltype(make_rar_info_log_entry(std::declval<rar_information>()));
 
@@ -243,7 +246,7 @@ auto make_rar_info_log_list(const static_vector<rar_information, MAX_RAR_PDUS_PE
   return list;
 }
 
-auto make_ue_dl_msg_info_log_entry(const dl_msg_alloc& ue_msg)
+static auto make_ue_dl_msg_info_log_entry(const dl_msg_alloc& ue_msg)
 {
   return make_formattable([ue_idx   = ue_msg.context.ue_index,
                            rnti     = ue_msg.pdsch_cfg.rnti,
@@ -274,7 +277,7 @@ auto make_ue_dl_msg_info_log_entry(const dl_msg_alloc& ue_msg)
   });
 }
 
-auto make_ue_dl_msg_info_log_list(const static_vector<dl_msg_alloc, MAX_UE_PDUS_PER_SLOT>& ue_msgs)
+static auto make_ue_dl_msg_info_log_list(const static_vector<dl_msg_alloc, MAX_UE_PDUS_PER_SLOT>& ue_msgs)
 {
   using entry_type = decltype(make_ue_dl_msg_info_log_entry(std::declval<dl_msg_alloc>()));
 
@@ -286,7 +289,7 @@ auto make_ue_dl_msg_info_log_list(const static_vector<dl_msg_alloc, MAX_UE_PDUS_
   return list;
 }
 
-auto make_ue_ul_msg_info_log_entry(const ul_sched_info& ue_msg)
+static auto make_ue_ul_msg_info_log_entry(const ul_sched_info& ue_msg)
 {
   return make_formattable([ue_idx     = ue_msg.context.ue_index,
                            rnti       = ue_msg.pusch_cfg.rnti,
@@ -318,7 +321,7 @@ auto make_ue_ul_msg_info_log_entry(const ul_sched_info& ue_msg)
   });
 }
 
-auto make_ue_ul_msg_info_log_list(const static_vector<ul_sched_info, MAX_UE_PDUS_PER_SLOT>& ue_msgs)
+static auto make_ue_ul_msg_info_log_list(const static_vector<ul_sched_info, MAX_UE_PDUS_PER_SLOT>& ue_msgs)
 {
   using entry_type = decltype(make_ue_ul_msg_info_log_entry(std::declval<ul_sched_info>()));
 
@@ -330,7 +333,7 @@ auto make_ue_ul_msg_info_log_list(const static_vector<ul_sched_info, MAX_UE_PDUS
   return list;
 }
 
-auto make_paging_info_log_entry(const dl_paging_allocation& pg_info)
+static auto make_paging_info_log_entry(const dl_paging_allocation& pg_info)
 {
   return make_formattable([rb             = pg_info.pdsch_cfg.rbs,
                            tbs            = pg_info.pdsch_cfg.codewords[0].tb_size_bytes,
@@ -348,7 +351,7 @@ auto make_paging_info_log_entry(const dl_paging_allocation& pg_info)
   });
 }
 
-auto make_paging_info_log_list(const static_vector<dl_paging_allocation, MAX_PAGING_PDUS_PER_SLOT>& pg_list)
+static auto make_paging_info_log_list(const static_vector<dl_paging_allocation, MAX_PAGING_PDUS_PER_SLOT>& pg_list)
 {
   using entry_type = decltype(make_paging_info_log_entry(std::declval<dl_paging_allocation>()));
 
@@ -360,7 +363,7 @@ auto make_paging_info_log_list(const static_vector<dl_paging_allocation, MAX_PAG
   return list;
 }
 
-auto make_info_log_entry(const sched_result& result, bool log_broadcast)
+static auto make_info_log_entry(const sched_result& result, bool log_broadcast)
 {
   return make_formattable([sibs    = make_sib_info_log_list(result.dl.bc.sibs, log_broadcast),
                            rars    = make_rar_info_log_list(result.dl.rar_grants),
@@ -380,7 +383,7 @@ auto make_info_log_entry(const sched_result& result, bool log_broadcast)
   });
 }
 
-auto make_ssb_debug_log_entry(const ssb_information& ssb_info)
+static auto make_ssb_debug_log_entry(const ssb_information& ssb_info)
 {
   return make_formattable([ssb_idx = ssb_info.ssb_index, crbs = ssb_info.crbs, symbs = ssb_info.symbols](auto& ctx) {
     return fmt::format_to(ctx.out(), "\n- SSB: ssbIdx={} crbs={} symb={}", ssb_idx, crbs, symbs);
@@ -388,7 +391,8 @@ auto make_ssb_debug_log_entry(const ssb_information& ssb_info)
 }
 
 template <typename ItemType, typename ListItemFormatter, std::size_t N>
-auto format_each(const static_vector<ItemType, N>& list, const ListItemFormatter& item_formatter, bool enabled = true)
+static auto
+format_each(const static_vector<ItemType, N>& list, const ListItemFormatter& item_formatter, bool enabled = true)
 {
   static_vector<decltype(item_formatter(std::declval<ItemType>())), N> out;
   if (enabled) {
@@ -399,7 +403,7 @@ auto format_each(const static_vector<ItemType, N>& list, const ListItemFormatter
   return out;
 }
 
-auto make_csi_rs_log_entry(const csi_rs_info& csi_rs)
+static auto make_csi_rs_log_entry(const csi_rs_info& csi_rs)
 {
   return make_formattable([type          = csi_rs.type,
                            crbs          = csi_rs.crbs,
@@ -425,7 +429,7 @@ auto make_csi_rs_log_entry(const csi_rs_info& csi_rs)
   });
 }
 
-auto make_sib_debug_log_entry(const sib_information& sib_info)
+static auto make_sib_debug_log_entry(const sib_information& sib_info)
 {
   return make_formattable([si_ind  = sib_info.si_indicator,
                            rbs     = sib_info.pdsch_cfg.rbs,
@@ -444,7 +448,7 @@ auto make_sib_debug_log_entry(const sib_information& sib_info)
   });
 }
 
-auto make_rar_debug_log_entry(const rar_information& rar_info)
+static auto make_rar_debug_log_entry(const rar_information& rar_info)
 {
   auto make_rar_grant_debug_entry = [](const rar_ul_grant& grant) {
     return make_formattable(
@@ -475,7 +479,7 @@ auto make_rar_debug_log_entry(const rar_information& rar_info)
   });
 }
 
-auto make_ue_dl_msg_debug_log_entry(const dl_msg_alloc& ue_grant)
+static auto make_ue_dl_msg_debug_log_entry(const dl_msg_alloc& ue_grant)
 {
   return make_formattable([ue_grant](auto& ctx) {
     fmt::format_to(ctx.out(),
@@ -513,7 +517,7 @@ auto make_ue_dl_msg_debug_log_entry(const dl_msg_alloc& ue_grant)
   });
 }
 
-auto make_paging_debug_log_entry(const dl_paging_allocation& pg)
+static auto make_paging_debug_log_entry(const dl_paging_allocation& pg)
 {
   return make_formattable([pg](auto& ctx) {
     fmt::format_to(ctx.out(),
@@ -536,7 +540,7 @@ auto make_paging_debug_log_entry(const dl_paging_allocation& pg)
   });
 }
 
-auto make_pusch_debug_log_entry(const ul_sched_info& ul_info)
+static auto make_pusch_debug_log_entry(const ul_sched_info& ul_info)
 {
   return make_formattable([ul_info](auto& ctx) {
     fmt::format_to(ctx.out(),
@@ -575,7 +579,7 @@ auto make_pusch_debug_log_entry(const ul_sched_info& ul_info)
   });
 }
 
-auto make_pucch_debug_log_entry(const pucch_info& pucch)
+static auto make_pucch_debug_log_entry(const pucch_info& pucch)
 {
   return make_formattable([pucch](auto& ctx) {
     switch (pucch.format()) {
@@ -652,24 +656,27 @@ auto make_pucch_debug_log_entry(const pucch_info& pucch)
   });
 }
 
-auto make_srs_debug_log_entry(const srs_info& srs)
+static auto make_srs_debug_log_entry(const srs_info& srs)
 {
   return make_formattable([srs](auto& ctx) {
-    fmt::format_to(ctx.out(),
-                   "\n- SRS: c-rnti={} symb={} tx-comb=(n{} o={} cs={}) c_srs={} f_sh={} seq_id={}",
-                   srs.crnti,
-                   srs.symbols,
-                   static_cast<unsigned>(srs.tx_comb),
-                   srs.comb_offset,
-                   srs.cyclic_shift,
-                   srs.config_index,
-                   srs.freq_shift,
-                   srs.sequence_id);
+    fmt::format_to(
+        ctx.out(),
+        "\n- SRS: c-rnti={} symb={} tx-comb=(n{} o={} cs={}) c_srs={} f_sh={} seq_id={} requests=[ch_mtx={} pos={}]",
+        srs.crnti,
+        srs.symbols,
+        static_cast<unsigned>(srs.tx_comb),
+        srs.comb_offset,
+        srs.cyclic_shift,
+        srs.config_index,
+        srs.freq_shift,
+        srs.sequence_id,
+        srs.normalized_channel_iq_matrix_requested ? "yes" : "no",
+        srs.positioning_report_requested ? "yes" : "no");
     return ctx.out();
   });
 }
 
-auto make_prach_debug_log_entry(const prach_occasion_info& prach)
+static auto make_prach_debug_log_entry(const prach_occasion_info& prach)
 {
   return make_formattable([prach](auto& ctx) {
     fmt::format_to(ctx.out(),
@@ -682,7 +689,7 @@ auto make_prach_debug_log_entry(const prach_occasion_info& prach)
   });
 }
 
-auto make_debug_log_entry(const sched_result& result, bool log_broadcast)
+static auto make_debug_log_entry(const sched_result& result, bool log_broadcast)
 {
   return make_formattable(
       [ssbs      = format_each(result.dl.bc.ssb_info, make_ssb_debug_log_entry, log_broadcast),
@@ -713,8 +720,6 @@ auto make_debug_log_entry(const sched_result& result, bool log_broadcast)
       });
 }
 
-} // namespace
-
 scheduler_result_logger::scheduler_result_logger(bool log_broadcast_, pci_t pci_) :
   logger(srslog::fetch_basic_logger("SCHED")), log_broadcast(log_broadcast_), enabled(logger.info.enabled()), pci(pci_)
 {
@@ -724,15 +729,23 @@ void scheduler_result_logger::log_debug(const sched_result& result, std::chrono:
 {
   const bool broadcast_is_empty = result.dl.bc.ssb_info.empty() and result.dl.bc.sibs.empty() and
                                   result.dl.csi_rs.empty() and result.ul.prachs.empty();
-  const bool non_broadcast_is_empty = result.dl.dl_pdcchs.empty() and result.dl.ul_pdcchs.empty() and
-                                      result.dl.paging_grants.empty() and result.dl.rar_grants.empty() and
-                                      result.dl.ue_grants.empty() and result.ul.puschs.empty() and
-                                      result.ul.pucchs.empty();
-  const bool slot_is_logged = (log_broadcast and not broadcast_is_empty) or not non_broadcast_is_empty;
+
+  const bool non_broadcast_is_empty =
+      std::none_of(result.dl.dl_pdcchs.begin(),
+                   result.dl.dl_pdcchs.end(),
+                   [](const pdcch_dl_information& pdcch) { return pdcch.ctx.rnti != rnti_t::SI_RNTI; }) and
+      result.dl.ul_pdcchs.empty() and result.dl.paging_grants.empty() and result.dl.rar_grants.empty() and
+      result.dl.ue_grants.empty() and result.ul.puschs.empty() and result.ul.pucchs.empty() and result.ul.srss.empty();
+
+  const bool failed_attempts = result.failed_attempts.pdcch + result.failed_attempts.uci > 0;
+  const bool slot_is_logged =
+      (log_broadcast and not broadcast_is_empty) or not non_broadcast_is_empty or failed_attempts;
 
   if (slot_is_logged) {
-    const unsigned nof_pdschs = result.dl.paging_grants.size() + result.dl.rar_grants.size() +
-                                result.dl.ue_grants.size() + result.dl.bc.sibs.size();
+    unsigned nof_pdschs = result.dl.paging_grants.size() + result.dl.rar_grants.size() + result.dl.ue_grants.size();
+    if (log_broadcast) {
+      nof_pdschs += result.dl.bc.sibs.size();
+    }
     const unsigned nof_puschs       = result.ul.puschs.size();
     const unsigned nof_failed_pdcch = result.failed_attempts.pdcch;
     const unsigned nof_failed_uci   = result.failed_attempts.uci;
@@ -753,13 +766,16 @@ void scheduler_result_logger::log_debug(const sched_result& result, std::chrono:
 
 void scheduler_result_logger::log_info(const sched_result& result, std::chrono::microseconds decision_latency)
 {
-  bool slot_is_logged = (log_broadcast and not result.dl.bc.sibs.empty()) or not result.dl.rar_grants.empty() or
+  const bool failed_attempts = result.failed_attempts.pdcch + result.failed_attempts.uci > 0;
+  bool       slot_is_logged  = (log_broadcast and not result.dl.bc.sibs.empty()) or not result.dl.rar_grants.empty() or
                         not result.dl.ue_grants.empty() or not result.ul.puschs.empty() or
-                        not result.dl.paging_grants.empty();
+                        not result.dl.paging_grants.empty() or failed_attempts;
 
   if (slot_is_logged) {
-    const unsigned nof_pdschs = result.dl.paging_grants.size() + result.dl.rar_grants.size() +
-                                result.dl.ue_grants.size() + result.dl.bc.sibs.size();
+    unsigned nof_pdschs = result.dl.paging_grants.size() + result.dl.rar_grants.size() + result.dl.ue_grants.size();
+    if (log_broadcast) {
+      nof_pdschs += result.dl.bc.sibs.size();
+    }
     const unsigned nof_puschs = result.ul.puschs.size();
     logger.info("Slot decisions pci={} t={}us ({} PDSCH{}, {} PUSCH{}): {}",
                 pci,

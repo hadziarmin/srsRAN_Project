@@ -39,7 +39,12 @@ struct cell_selection_info {
   bounded_integer<int, -43, -12> q_qual_min = -20;
 };
 
-enum class sib_type { sib1 = 1, sib2 = 2, sib6 = 6, sib7 = 7, sib8 = 8, sib19 = 19, sib_invalid };
+struct cell_access_related_info {
+  /// Additional PLMNs that the UE can use to access the cell besides the cell primary PLMN. See TS 38.331, \c SIB1.
+  std::vector<plmn_identity> additional_plmns;
+};
+
+enum class sib_type : unsigned { sib1 = 1, sib2 = 2, sib6 = 6, sib7 = 7, sib8 = 8, sib19 = 19, sib_invalid };
 
 /// Configures a pattern of SSBs. See TS 38.331, \c SSB-ToMeasure.
 /// Equates to longBitmap when size of bitset equals to 64.
@@ -265,14 +270,17 @@ struct sib19_info {
   // with std::optional.
   sib19_info() {}
 
-  std::optional<uint16_t>                                                distance_thres;
-  std::optional<std::string>                                             ref_location;
+  std::optional<unsigned>                                                distance_thres;
+  std::optional<geodetic_coordinates_t>                                  ref_location;
+  std::optional<uint64_t>                                                t_service;
   std::optional<uint16_t>                                                cell_specific_koffset;
   std::optional<std::variant<ecef_coordinates_t, orbital_coordinates_t>> ephemeris_info;
   std::optional<epoch_time_t>                                            epoch_time;
   std::optional<uint16_t>                                                k_mac;
   std::optional<ta_info_t>                                               ta_info;
   std::optional<uint16_t>                                                ntn_ul_sync_validity_dur;
+  std::optional<ntn_polarization_t>                                      polarization;
+  std::optional<bool>                                                    ta_report;
 };
 
 /// \brief Variant type that can hold different types of SIBs that go in a SI message.

@@ -28,12 +28,14 @@ set(SOURCES
         executors/task_worker_pool.cpp
         executors/unique_thread.cpp
         executors/execution_context_description.cpp
+        executors/executor_decoration_factory.cpp
         network/io_broker_epoll.cpp
         network/io_broker_factory.cpp
         network/io_timer_source.cpp
         network/sctp_socket.cpp
         network/sockets.cpp
         network/transport_layer_address.cpp
+        synchronization/futex_util.cpp
         tracing/resource_usage.cpp
         tracing/event_tracing.cpp
         backtrace.cpp
@@ -51,11 +53,11 @@ set(SOURCES
         sysinfo.cpp
         timers.cpp
         math_utils.cpp
-        )
+)
 
 add_library(srsran_support STATIC ${SOURCES})
 target_link_libraries(srsran_support PRIVATE ${CMAKE_THREAD_LIBS_INIT} ${YAMLCPP_LIBRARY}
-                      ${NUMA_LIBRARIES} srslog)
+        ${NUMA_LIBRARIES} srslog)
 add_backward(srsran_support)
 
 if (Backward_FOUND AND BACKWARD_HAS_EXTERNAL_LIBRARIES)

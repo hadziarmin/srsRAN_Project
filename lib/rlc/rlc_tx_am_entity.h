@@ -159,7 +159,10 @@ private:
   /// latest buffer state upon execution.
   std::atomic_flag pending_buffer_state = ATOMIC_FLAG_INIT;
 
-  bool stopped = false;
+  /// Flag that indicates whether the upper part of the RLC entity is stopped. Access from ue_executor.
+  bool stopped_upper = false;
+  /// Flag that indicates whether the upper part of the RLC entity is stopped. Access from pcell_executor.
+  bool stopped_lower = false;
 
   bool max_retx_reached = false;
 
@@ -171,7 +174,7 @@ public:
                    rlc_tx_upper_layer_data_notifier&    upper_dn_,
                    rlc_tx_upper_layer_control_notifier& upper_cn_,
                    rlc_tx_lower_layer_notifier&         lower_dn_,
-                   rlc_metrics_aggregator&              metrics_aggregator_,
+                   rlc_bearer_metrics_collector&        metrics_coll_,
                    rlc_pcap&                            pcap_,
                    task_executor&                       pcell_executor_,
                    task_executor&                       ue_executor_,
@@ -180,11 +183,17 @@ public:
   void stop() final
   {
     // Stop all timers. Any queued handlers of timers that just expired before this call are canceled automatically
-    if (not stopped) {
-      poll_retransmit_timer.stop();
+    if (not stopped_upper) {
+      stopped_upper = true;
       high_metrics_timer.stop();
-      low_metrics_timer.stop();
-      stopped = true;
+      // stop lower part (e.g. timers) from cell executor
+      if (!pcell_executor.execute([this]() {
+            stopped_lower = true;
+            poll_retransmit_timer.stop();
+            low_metrics_timer.stop();
+          })) {
+        logger.log_error("Unable to stop lower timers.");
+      }
     }
   }
 
@@ -196,7 +205,7 @@ public:
   void discard_sdu(uint32_t pdcp_sn) override;
 
   // Interfaces for lower layers
-  size_t pull_pdu(span<uint8_t> rlc_pdu_buf) override;
+  size_t pull_pdu(span<uint8_t> rlc_pdu_buf) noexcept override;
 
   rlc_buffer_state get_buffer_state() override;
 
@@ -219,7 +228,7 @@ public:
   ///
   /// Note: This function shall be executed by the same executor that calls pull_pdu(), i.e. the pcell_executor,
   /// in order to avoid incidential blocking of those critical paths.
-  void on_expired_poll_retransmit_timer();
+  void on_expired_poll_retransmit_timer() noexcept;
 
   // Window helpers
 
@@ -320,7 +329,7 @@ private:
 
   /// \brief Evaluates a status PDU, schedules RETX and removes ACK'ed SDUs from TX window
   /// \param status The status PDU
-  void handle_status_pdu(rlc_am_status_pdu status);
+  void handle_status_pdu(rlc_am_status_pdu status) noexcept;
 
   /// \brief Schedules RETX for NACK'ed PDUs
   ///
@@ -372,7 +381,7 @@ private:
   ///
   /// Safe execution from: pcell_executor
   /// \param force_notify forces a notification of the lower layer regardless of the current/previous buffer state.
-  void update_mac_buffer_state(bool force_notify);
+  void update_mac_buffer_state(bool force_notify) noexcept;
 
   void log_state(srslog::basic_levels level)
   {
