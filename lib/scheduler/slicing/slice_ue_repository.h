@@ -26,8 +26,9 @@
 #include "srsran/adt/slotted_array.h"
 
 namespace srsran {
-  extern std::atomic<bool> g_use_custom_policy;
-  extern std::atomic<uint16_t> g_use_custom_policy_ue;
+  extern std::atomic<bool> g_use_gbr;
+  extern std::atomic<uint16_t> g_use_gbr_ue; //UE C-RNTI
+  extern std::atomic<double> g_use_gbr_ul_tp; //UE UL Throughput in Mbps
 class slice_ue_repository;
 
 /// UE that is a candidate for scheduling in a given RAN slice for a given cell.

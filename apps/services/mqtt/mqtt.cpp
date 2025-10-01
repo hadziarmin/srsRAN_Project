@@ -61,24 +61,28 @@ void MQTTClient::start_listening() {
             std::cout << "Received message: " << msg->to_string() << std::endl;
             std::string payload = msg->to_string();
             std::stringstream ss(payload);
-            std::string flag_str, ue_rnti_hex;
+            std::string flag_str, ue_rnti_hex, ue_ul_tp_str;
             uint16_t ue_rnti = 0;
-            if (std::getline(ss, flag_str, ',') && std::getline(ss, ue_rnti_hex)) {
-                try {
-                    // Parse the second part as hex and store as decimal
-                    ue_rnti = std::stoi(ue_rnti_hex, nullptr, 16);
-                    std::cout << "Second number (hex): " << ue_rnti_hex
-                              << " as decimal: " << ue_rnti << std::endl;
-                } catch (const std::exception& e) {
-                    std::cerr << "Error converting second value from hex to int: " << e.what() << std::endl;
-                }
+            double ue_ul_tp = 0;
+            if (std::getline(ss, flag_str, ',') && std::getline(ss, ue_rnti_hex, ',') && std::getline(ss, ue_ul_tp_str)) {
+              try {
+                // Parse the second part as hex and store as decimal
+                ue_rnti  = std::stoi(ue_rnti_hex, nullptr, 16);
+                ue_ul_tp = std::stod(ue_ul_tp_str);
+                std::cout << "Second number (hex): " << ue_rnti_hex << " as decimal: " << ue_rnti << std::endl;
+                std::cout << "TP as str: " << ue_ul_tp_str << " as decimal: " << ue_ul_tp << std::endl;
+
+                bool flag = (flag_str != "0");
+                std::cout << "Flag: " << flag << std::endl;
+                srsran::g_use_gbr.store(flag, std::memory_order_relaxed);
+                srsran::g_use_gbr_ue.store(ue_rnti, std::memory_order_relaxed);
+                srsran::g_use_gbr_ul_tp.store(ue_ul_tp, std::memory_order_relaxed);
+              } catch (const std::exception& e) {
+                std::cerr << "Error converting string value to int: " << e.what() << std::endl;
+              }
             } else {
-                std::cerr << "Invalid message format! Expected two values separated by a comma." << std::endl;
+              std::cerr << "Invalid message format! Expected three values separated by a comma." << std::endl;
             }
-            bool flag = (flag_str != "0");
-            std::cout << "Flag: " << flag << std::endl;
-            srsran::g_use_custom_policy.store(flag, std::memory_order_relaxed);  
-            srsran::g_use_custom_policy_ue.store(ue_rnti, std::memory_order_relaxed);          
         });
 
     std::cout << "Listening for messages..." << std::endl;

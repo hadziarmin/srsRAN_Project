@@ -22,10 +22,13 @@
 
 #include "scheduler_time_rrlb.h"
 #include "../slicing/slice_ue_repository.h"
+#include <iostream>
 
 using namespace srsran;
 
-scheduler_time_rrlb::scheduler_time_rrlb(const scheduler_ue_expert_config& expert_cfg_) : expert_cfg(expert_cfg_) {}
+scheduler_time_rrlb::scheduler_time_rrlb(const scheduler_ue_expert_config& expert_cfg_) : expert_cfg(expert_cfg_) {
+  std::cout << " Location Based RR scheduler loaded: " << std::endl;
+}
 
 void scheduler_time_rrlb::compute_ue_dl_priorities(slot_point               pdcch_slot,
                                                  slot_point               pdsch_slot,

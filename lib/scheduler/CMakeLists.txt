@@ -31,6 +31,7 @@ set(SOURCES
         pdcch_scheduling/pdcch_slot_resource_allocator.cpp
         policy/scheduler_policy_factory.cpp
         policy/scheduler_time_rr.cpp
+        policy/scheduler_time_rrlb.cpp
         policy/scheduler_time_qos.cpp
         policy/scheduler_time_qoslb.cpp
         pucch_scheduling/pucch_allocator_impl.cpp

@@ -35,10 +35,11 @@ constexpr unsigned MAX_PF_COEFF = 10;
 // [Implementation-defined] Maximum number of slots skipped between scheduling opportunities.
 constexpr unsigned MAX_SLOT_SKIPPED = 20;
 
+bool yieldToHighPriority=false;
 scheduler_time_qos_lb::scheduler_time_qos_lb(const scheduler_ue_expert_config& expert_cfg_, du_cell_index_t cell_index_) :
   params(std::get<time_qos_scheduler_expert_config>(expert_cfg_.strategy_cfg)), cell_index(cell_index_)
 {
-  std::cerr << " Location Based scheduler loaded: " << std::endl;
+  std::cout << " Location Based scheduler loaded: " << std::endl;
 }
 
 void scheduler_time_qos_lb::add_ue(du_ue_index_t ue_index)
@@ -209,30 +210,41 @@ double compute_ul_qos_weights(const slice_ue&                         u,
                               double                                  avg_ul_rate,
                               const time_qos_scheduler_expert_config& policy_params)
 {
-  bool custom_logic = g_use_custom_policy.load(std::memory_order_relaxed);
-  uint16_t custom_logic_ue = g_use_custom_policy_ue.load(std::memory_order_relaxed);
-  // if (u.has_pending_sr() or avg_ul_rate == 0) {
+  bool gbr_override = g_use_gbr.load(std::memory_order_relaxed);
+  uint16_t gbr_ue = g_use_gbr_ue.load(std::memory_order_relaxed);
+  double gbr_ue_ul_tp = g_use_gbr_ul_tp.load(std::memory_order_relaxed);
+  if (u.has_pending_sr() or avg_ul_rate == 0) {
+    // Highest priority to SRs and UEs that have not yet received any allocation.
+    return max_sched_priority;
+  }
+
+  // if (custom_logic and (uint16_t)u.crnti() == custom_logic_ue and avg_ul_rate < 1250) { 
+  //     return max_sched_priority;
+  // }
+
+  // if (custom_logic) {
+  //   if ((uint16_t)u.crnti() == custom_logic_ue) {
+  //     if (avg_ul_rate < 1875) {
+  //       yieldToHighPriority=true;
+  //       return max_sched_priority;
+  //     }
+  //     else
+  //     {
+  //       yieldToHighPriority=false;
+  //     }
+  //   } else if (u.has_pending_sr() and !yieldToHighPriority) {
+  //     // Highest priority to SRs and UEs that have not yet received any allocation.
+  //     return max_sched_priority;
+  //   }
+  // } else if (u.has_pending_sr() or avg_ul_rate == 0) {
   //   // Highest priority to SRs and UEs that have not yet received any allocation.
   //   return max_sched_priority;
   // }
-  if (u.has_pending_sr() or avg_ul_rate == 0) {
-    if (custom_logic) {
-      if ((uint16_t)u.crnti() == custom_logic_ue and avg_ul_rate < 2500) // and avg_ul_rate < 1250
-      {
-        return max_sched_priority;
-      } else
-        return lowest_sched_priority;
-    } else
-      return max_sched_priority;
-  }
 
-  if (custom_logic) {
-    if ((uint16_t)u.crnti() == custom_logic_ue and avg_ul_rate < 2500) // and avg_ul_rate < 1250
-    {
-      return max_sched_priority;
-    } else
-      return lowest_sched_priority;
-  }
+  //   if (u.has_pending_sr()) {
+  //   // Highest priority to SRs and UEs that have not yet received any allocation.
+  //   return max_sched_priority;
+  // }
 
   uint8_t min_prio_level = qos_prio_level_t::max();
   double  gbr_weight     = 0;
@@ -263,16 +275,24 @@ double compute_ul_qos_weights(const slice_ue&                         u,
         gbr_weight = max_metric_weight;
       }
     }
-    }
+  }
 
-    // if (custom_logic and u.ue_index() == custom_logic_ue and avg_ul_rate < 25000)
-    // {
-    //   if (ul_rate != 0) {
-    //       gbr_weight += std::min(lc->qos->gbr_qos_info->gbr_ul / ul_rate, max_metric_weight);
-    //     } else {
-    //       gbr_weight = max_metric_weight;
-    //     }
-    // }
+    // Option 1
+  if (gbr_override and (uint16_t) u.crnti() == gbr_ue) {
+    //Calculate GBR TP in Mbps to number of bytes per slot
+    double avg_ul_rate_bps = avg_ul_rate * 8 * 1600; //Mbps 1600 is a guess (DL slots)
+    double required_ul_gbr_bps = gbr_ue_ul_tp * 1000000; //Mbps
+    //std::cout << " Avg. ul rate:" << avg_ul_rate << " Avg. ul rate bps:" << avg_ul_rate_bps << " Required: " << required_ul_gbr_bps << std::endl;
+    if (avg_ul_rate_bps < required_ul_gbr_bps) {
+      min_prio_level = 0; // Highest priority
+      if (avg_ul_rate_bps != 0) {
+        gbr_weight += std::min(required_ul_gbr_bps / avg_ul_rate_bps, max_metric_weight); //2600
+      } else {
+        gbr_weight = max_metric_weight;
+      }
+    }
+  }
+
     // If no GBR flows are configured, the gbr rate is set to 1.0.
     gbr_weight = policy_params.gbr_enabled and gbr_weight != 0 ? gbr_weight : 1.0;
 
@@ -281,7 +301,38 @@ double compute_ul_qos_weights(const slice_ue&                         u,
                                                               static_cast<double>(qos_prio_level_t::max() + 1)
                                                         : 1.0;
 
-    return combine_qos_metrics(pf_weight, gbr_weight, prio_weight, 1.0, policy_params);
+   // Option 2                                                     
+  //  if (custom_logic) {
+  //       if ((uint16_t)u.crnti() == custom_logic_ue) {
+  //           if (avg_ul_rate < 1875) {
+  //             yieldToHighPriority=true;
+  //              return max_metric_weight;
+  //           }
+  //           else
+  //           {
+  //             yieldToHighPriority=false;
+  //           }
+  //       } else if(yieldToHighPriority){
+  //           return 0.0;
+  //       }
+  //   }
+
+    double metric = combine_qos_metrics(pf_weight, gbr_weight, prio_weight, 1.0, policy_params);
+    //std::cout << "UE:"<< (uint16_t)u.crnti() <<" | "<< avg_ul_rate <<" | "<< gbr_weight <<" | "<< pf_weight <<" | "<< prio_weight << " | "<< metric << std::endl;
+    //std::cout << "UE:"<< (uint16_t)u.crnti() <<" | "<< avg_ul_rate << std::endl;
+    // Option 3
+    // if (custom_logic) {
+    //   if ((uint16_t) u.crnti() == custom_logic_ue and avg_ul_rate < 1875) {
+    //     metric *= 100.0; 
+    //     yieldToHighPriority=true;
+    //   } else {
+    //     metric *= 0.01; 
+    //   }
+    // }  
+    
+
+    return metric;
+    //return combine_qos_metrics(pf_weight, gbr_weight, prio_weight, 1.0, policy_params);
   }
 
 } // namespace

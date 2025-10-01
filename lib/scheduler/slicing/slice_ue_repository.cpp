@@ -23,8 +23,9 @@
 #include "slice_ue_repository.h"
 #include <iostream>
 namespace srsran{
-    std::atomic<bool> g_use_custom_policy{false};
-    std::atomic<uint16_t> g_use_custom_policy_ue{0};
+    std::atomic<bool> g_use_gbr{false};
+    std::atomic<uint16_t> g_use_gbr_ue{0};
+    std::atomic<double> g_use_gbr_ul_tp{0};
 }
 using namespace srsran;
 
@@ -136,8 +137,8 @@ unsigned slice_ue::pending_ul_newtx_bytes() const
   // ...existing code...
 
 
-  bool custom_logic = g_use_custom_policy.load(std::memory_order_relaxed);
-  uint16_t custom_logic_ue = g_use_custom_policy_ue.load(std::memory_order_relaxed);
+  bool gbr_override = g_use_gbr.load(std::memory_order_relaxed);
+  uint16_t gbr_ue = g_use_gbr_ue.load(std::memory_order_relaxed);
   int pending_bytes;
   auto now = std::chrono::steady_clock::now();
   if (now - last_print >= PRINT_INTERVAL) {
@@ -146,11 +147,11 @@ unsigned slice_ue::pending_ul_newtx_bytes() const
     last_print = now;
   }
 
-  if (0 && custom_logic && custom_logic_ue == to_value(u.crnti)) {
-    pending_bytes = std::max(100U, u.ul_logical_channels().pending_bytes(slice_id));
-  } else {
-    pending_bytes = u.ul_logical_channels().pending_bytes(slice_id);
-  }
+  pending_bytes = u.ul_logical_channels().pending_bytes(slice_id);
+  if (0 && gbr_override && gbr_ue == to_value(u.crnti)) {
+    //std::cout << "Pending bytes:"<< pending_bytes << std::endl;
+    pending_bytes = std::min(37500U, u.ul_logical_channels().pending_bytes(slice_id));
+  } 
 
   //int pending_bytes  = u.ul_logical_channels().pending_bytes(slice_id);
   //int pending_bytes  = std::max(1000U,u.ul_logical_channels().pending_bytes(slice_id));
